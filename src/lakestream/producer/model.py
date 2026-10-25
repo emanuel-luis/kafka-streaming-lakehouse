@@ -22,10 +22,14 @@ class Event:
     currency: str | None = None
     payment_method: str | None = None
     payment_status: str | None = None
+    device_type: str | None = None  # schema v2
 
     def as_record(self) -> dict[str, Any]:
-        """The Avro record, with the Python types the serializer expects."""
-        return dict(self.__dict__)
+        """The Avro record, with the Python types the serializer expects (v1 has no device_type)."""
+        record = dict(self.__dict__)
+        if record["device_type"] is None:
+            del record["device_type"]
+        return record
 
 
 @dataclass(frozen=True)

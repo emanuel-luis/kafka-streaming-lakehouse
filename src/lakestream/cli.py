@@ -11,16 +11,45 @@ app = typer.Typer(no_args_is_help=True, add_completion=False, help="Kafka to lak
 
 @app.command("register-schemas")
 def register_schemas(
-    version: Annotated[
-        int, typer.Option(min=1, max=1, help="Schema version (only 1 for now).")
-    ] = 1,
+    version: Annotated[int, typer.Option(min=1, max=2, help="Schema version to register.")] = 1,
+    check_only: Annotated[
+        str | None,
+        typer.Option(
+            metavar="PATH",
+            help="Only test this schema file (or packaged schema name) for compatibility.",
+        ),
+    ] = None,
 ) -> None:
-    """Set BACKWARD compatibility on shop.events-value and register the schema."""
+    """Set BACKWARD on shop.events-value, test compatibility, then register the schema."""
     from lakestream.contracts import SUBJECT
-    from lakestream.registry import COMPATIBILITY, register_schema
+    from lakestream.registry import (
+        COMPATIBILITY,
+        IncompatibleSchemaError,
+        check_schema,
+        read_schema,
+        register_schema,
+    )
     from lakestream.settings import SchemaRegistrySettings
 
-    schema_id = register_schema(SchemaRegistrySettings().url, version)
+    url = SchemaRegistrySettings().url
+    if check_only is not None:
+        try:
+            schema = read_schema(check_only)
+        except FileNotFoundError as exc:
+            raise typer.BadParameter(str(exc), param_hint="--check-only") from exc
+        if not check_schema(url, schema):
+            typer.echo(
+                f"incompatible: {check_only} breaks {COMPATIBILITY} compatibility of {SUBJECT}",
+                err=True,
+            )
+            raise typer.Exit(1)
+        typer.echo(f"compatible: {check_only} with {SUBJECT} ({COMPATIBILITY})")
+        return
+    try:
+        schema_id = register_schema(url, version)
+    except IncompatibleSchemaError as exc:
+        typer.echo(f"incompatible: {exc}", err=True)
+        raise typer.Exit(1) from exc
     typer.echo(f"subject={SUBJECT} version={version} id={schema_id} compatibility={COMPATIBILITY}")
 
 
@@ -43,6 +72,9 @@ def produce(
     ] = None,
     malformed: Annotated[int | None, typer.Option(help="Malformed records [10].")] = None,
     invalid: Annotated[int | None, typer.Option(help="Avro-valid invalid records [14].")] = None,
+    schema_version: Annotated[
+        int | None, typer.Option(min=1, max=2, help="Avro schema version to send [1].")
+    ] = None,
     manifest: Annotated[
         Path | None, typer.Option(help="Manifest path, default runs/RUN_ID.json.")
     ] = None,
@@ -88,6 +120,7 @@ def produce(
         kafka=KafkaSettings(),
         registry_url=SchemaRegistrySettings().url,
         run_id=run_id,
+        schema_version=pick(schema_version, s.schema_version),
     )
     if code:
         raise typer.Exit(code)

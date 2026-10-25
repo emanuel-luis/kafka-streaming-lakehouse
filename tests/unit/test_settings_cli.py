@@ -130,3 +130,15 @@ def test_no_pyspark_outside_the_spark_package() -> None:
         "sys.exit(1 if 'pyspark' in sys.modules else 0)\n"
     )
     assert subprocess.run([sys.executable, "-c", code], check=False).returncode == 0
+
+
+@pytest.mark.parametrize(
+    "args", [["register-schemas", "--version", "3"], ["produce", "--schema-version", "3"]]
+)
+def test_schema_versions_are_one_or_two(args: list[str]) -> None:
+    assert CliRunner().invoke(app, args).exit_code == 2
+
+
+def test_check_only_names_a_missing_file() -> None:
+    result = CliRunner().invoke(app, ["register-schemas", "--check-only", "nope.avsc"])
+    assert result.exit_code == 2

@@ -18,6 +18,7 @@ from lakestream.producer.generator import (
     generate,
     plan_sends,
     truncate_frame,
+    with_device_types,
 )
 from lakestream.producer.manifest import build_manifest, write_manifest
 from lakestream.producer.model import Event
@@ -63,15 +64,20 @@ def run_produce(
     kafka: KafkaSettings,
     registry_url: str,
     run_id: str,
+    schema_version: int = 1,
 ) -> int:
     """Send the run. Returns the exit code: 1 on any failed delivery (no manifest then)."""
     started = utc_now()
-    plan = plan_sends(generate(gen), gen, inj)
+    events = generate(gen)
+    if schema_version == 2:
+        events = with_device_types(events, gen.seed)
+    plan = plan_sends(events, gen, inj)
     serializer = AvroSerializer(
         SchemaRegistryClient({"url": registry_url}),
-        load_schema(1),
+        load_schema(schema_version),
         lambda event, _ctx: event.as_record(),
-        # The subject is fixed so a test topic can reuse the registered schema.
+        # The schema must already be registered (its id is looked up). The subject is fixed so a
+        # test topic can reuse the registered schema.
         {"auto.register.schemas": False, "subject.name.strategy": lambda _ctx, _name: SUBJECT},
     )
     ctx = SerializationContext(kafka.topic, MessageField.VALUE)
@@ -116,7 +122,7 @@ def run_produce(
         plan=plan,
         run_id=run_id,
         seed=gen.seed,
-        schema_version=1,
+        schema_version=schema_version,
         base_time=gen.base_time,
         span_minutes=gen.span_minutes,
         sessions=gen.sessions,
