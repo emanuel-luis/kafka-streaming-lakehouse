@@ -212,15 +212,35 @@ def plan_sends(events: list[Event], p: GenParams, inj: InjectParams) -> SendPlan
     """Order the sends and apply the four injections, on disjoint records."""
     rng = random.Random(f"{p.seed}:inject")
     n = len(events)
-    k_late = min(round(inj.late_rate * n), n) if inj.late_max_seconds else 0
-    k_dup = min(round(inj.duplicate_rate * n), n - k_late)
+    ms = [int(e.event_time.timestamp() * 1000) for e in events]
+    late_max_ms = inj.late_max_seconds * 1000
+    # events are in event-time order, so the next same-user event is the next index of that user
+    prev: dict[int, int] = {}
+    nxt: dict[int, int] = {}
+    last: dict[str, int] = {}
+    for i, e in enumerate(events):
+        if e.user_id in last:
+            prev[i] = last[e.user_id]
+            nxt[last[e.user_id]] = i
+        last[e.user_id] = i
+    k_late = min(round(inj.late_rate * n), n)
     perm = rng.sample(range(n), n)
-    late = set(perm[:k_late])
-    dup = set(perm[k_late : k_late + k_dup])
+    # a late event i is sent at t_j + extra, after its next same-user event j (same partition);
+    # i and its same-user neighbours are never both late, so j is sent on time
+    late_at: dict[int, int] = {}
+    for i in perm:
+        if len(late_at) >= k_late:
+            break
+        j = nxt.get(i)
+        if j is None or ms[j] - ms[i] >= late_max_ms or prev.get(i) in late_at or j in late_at:
+            continue
+        late_at[i] = ms[j] + rng.randint(1, late_max_ms - (ms[j] - ms[i]))
+    late = set(late_at)
+    k_dup = min(round(inj.duplicate_rate * n), n - len(late))
+    dup = set([i for i in perm if i not in late][:k_dup])
 
     def send_ms(i: int) -> int:
-        ms = int(events[i].event_time.timestamp() * 1000)
-        return ms + rng.randint(1, inj.late_max_seconds * 1000) if i in late else ms
+        return late_at.get(i, ms[i])
 
     order = sorted(range(n), key=lambda i: (send_ms(i), i))
     # sort key = (position, tie-break, serial); a float position puts an extra between two records
