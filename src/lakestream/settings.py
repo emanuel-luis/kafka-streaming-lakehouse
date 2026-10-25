@@ -70,3 +70,12 @@ class ConsumerSettings(_Base):
     write_retries: int = 5
     bronze_table: str = "bronze.events"
     heartbeat_file: Path = Path("/tmp/consumer-heartbeat")
+
+
+class SparkSettings(_Base):
+    model_config = SettingsConfigDict(env_prefix="SPARK_")
+
+    master: str = "local[2]"
+    driver_memory: str = "1g"
+    ivy_dir: str | None = None
+    checkpoint_root: Path = Path("/checkpoints")
