@@ -121,6 +121,27 @@ def bronze_schema(avro_schema_json: str) -> Schema:
     return Schema(*fields)
 
 
+def evolve_schema(table: Table, fields: Iterable[NestedField]) -> Table:
+    """Add the writer-schema columns the table lacks (`union_by_name`), as optional columns.
+
+    A no-op without a commit when every name exists, e.g. after the other replica added it.
+    """
+    names = {f.name for f in table.schema().fields}
+    missing: dict[str, IcebergType] = {}
+    for f in fields:
+        if f.name not in names:
+            missing.setdefault(f.name, f.field_type)
+    if not missing:
+        return table
+    new = Schema(
+        *(NestedField(i, n, t, required=False) for i, (n, t) in enumerate(missing.items(), 1))
+    )
+    with table.update_schema() as update:
+        update.union_by_name(new)
+    log.info("bronze schema evolved", extra={"added": sorted(missing)})
+    return table
+
+
 def ensure_table(catalog: Catalog, identifier: str, schema: Schema) -> Table:
     """Create the namespace and table when missing; two consumers may start at the same time."""
     catalog.create_namespace_if_not_exists(Catalog.namespace_from(identifier))
@@ -286,6 +307,7 @@ def append_batch(
     *,
     first_offsets: Mapping[int, int],
     retries: int,
+    writer_fields: Sequence[NestedField] = (),
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
     """Append rows in one snapshot, retrying with the 1, 2, 4, 8, 16 s backoff.
@@ -296,6 +318,10 @@ def append_batch(
     Before each append the refreshed table is checked for offsets of this group and topic at or
     past `first_offsets`; a hit raises OffsetFenceError, never retried. The append asserts the
     parent snapshot, so the check is atomic with the commit (decision 21).
+
+    Columns of `writer_fields` the table lacks are added first, under the same retry. The fence
+    reads the metadata that schema commit returned, so it still sees every snapshot the append
+    will assert as its parent.
     """
     run_id, batch_id = summary["ingest.run_id"], int(summary["ingest.batch_id"])
     for attempt in range(retries + 1):
@@ -303,7 +329,7 @@ def append_batch(
             if attempt and has_batch(table, run_id, batch_id):
                 log.info("append already committed", extra={"batch_id": batch_id})
                 return
-            table = table.refresh()
+            table = evolve_schema(table.refresh(), writer_fields)
             written = walk_last_offsets(
                 read_summaries(table), summary["ingest.consumer_group"], summary["ingest.topic"]
             )

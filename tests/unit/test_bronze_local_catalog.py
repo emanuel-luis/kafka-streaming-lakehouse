@@ -4,12 +4,15 @@ The REST catalog of the stack is not needed to exercise table creation, partitio
 (the `days(ingested_at)` transform) and the snapshot-summary bookkeeping.
 """
 
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 import pytest
 from pyiceberg.catalog.sql import SqlCatalog
+from pyiceberg.exceptions import CommitFailedException
+from pyiceberg.types import StringType
 
 from lakestream.consumer import bronze
 from lakestream.consumer.batch import Rec
@@ -18,14 +21,17 @@ from lakestream.consumer.bronze import (
     TABLE_PROPERTIES,
     OffsetFenceError,
     append_batch,
+    avro_fields,
     bronze_schema,
     build_row,
     build_summary,
     ensure_table,
+    evolve_schema,
     has_batch,
     last_written_offsets,
 )
-from lakestream.producer.generator import GenParams, generate
+from lakestream.contracts import DEVICE_TYPES
+from lakestream.producer.generator import GenParams, generate, with_device_types
 from lakestream.registry import load_schema
 
 TOPIC = "shop.events"
@@ -182,3 +188,85 @@ def test_conflict_between_fence_and_append_reaches_the_fence(
         append_batch(table, *batch("run-a"), first_offsets={0: 0}, retries=5)
     scanned = catalog.load_table("bronze.events").scan().to_arrow()
     assert scanned["run_id"].to_pylist() == ["run-b"] * 10
+
+
+def _v2_batch(
+    first: int, n: int, *, version: int, run: str = "run-e", batch_id: int = 1
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
+    p = GenParams(sessions=5, seed=43)
+    events = generate(p) if version == 1 else with_device_types(generate(p), p.seed)
+    rows = [
+        build_row(
+            Rec(TOPIC, 0, o, 1_767_268_800_000, None, b""),
+            version,
+            events[o % len(events)].as_record(),
+            run_id=run,
+            batch_id=batch_id,
+            ingested_at=datetime(2026, 1, 2, 12, tzinfo=UTC),
+        )
+        for o in range(first, first + n)
+    ]
+    summary = build_summary(
+        run_id=run, batch_id=batch_id, group="g", topic=TOPIC, offsets={0: first + n - 1},
+        records=n, dlq_records=0,
+    )  # fmt: skip
+    return rows, summary
+
+
+V2_FIELDS = avro_fields(json.loads(load_schema(2)))
+
+
+def test_append_evolves_the_schema_for_a_new_writer_schema(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    table = ensure_table(catalog, "bronze.events", bronze_schema(load_schema(1)))
+    rows, summary = _v2_batch(0, 4, version=1)
+    append_batch(table, rows, summary, first_offsets={0: 0}, retries=0)
+    rows, summary = _v2_batch(4, 4, version=2, batch_id=2)
+    append_batch(table, rows, summary, first_offsets={0: 4}, retries=0, writer_fields=V2_FIELDS)
+
+    loaded = catalog.load_table("bronze.events")
+    assert loaded.schema().find_field("device_type").field_type == StringType()
+    assert not loaded.schema().find_field("device_type").required
+    schemas = len(loaded.metadata.schemas)
+    rows, summary = _v2_batch(8, 2, version=2, batch_id=3)
+    append_batch(table, rows, summary, first_offsets={0: 8}, retries=0, writer_fields=V2_FIELDS)
+    assert len(catalog.load_table("bronze.events").metadata.schemas) == schemas  # no-op
+
+    scanned = catalog.load_table("bronze.events").scan().to_arrow().sort_by("kafka_offset")
+    devices = scanned["device_type"].to_pylist()
+    assert devices[:4] == [None] * 4  # v1 rows
+    assert all(d in DEVICE_TYPES for d in devices[4:])
+    assert scanned["schema_id"].to_pylist() == [1] * 4 + [2] * 6
+
+
+def test_schema_race_with_the_other_replica_is_retried(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    catalog = _catalog(tmp_path)
+    table = ensure_table(catalog, "bronze.events", bronze_schema(load_schema(1)))
+    other = catalog.load_table("bronze.events")
+    stale = catalog.load_table("bronze.events")
+    evolve_schema(other, V2_FIELDS)
+    with pytest.raises(CommitFailedException):  # bronze never retries inside PyIceberg
+        evolve_schema(stale, V2_FIELDS)
+
+    (tmp_path / "second").mkdir()
+    catalog = _catalog(tmp_path / "second")
+    table = ensure_table(catalog, "bronze.events", bronze_schema(load_schema(1)))
+    other = catalog.load_table("bronze.events")
+    real = bronze.evolve_schema
+    calls: list[int] = []
+
+    def racing(t: Any, fields: Any) -> Any:
+        if not calls:  # the other replica adds the column right after this one refreshed
+            calls.append(1)
+            real(other, fields)
+        return real(t, fields)
+
+    monkeypatch.setattr(bronze, "evolve_schema", racing)
+    rows, summary = _v2_batch(0, 3, version=2)
+    append_batch(table, rows, summary, first_offsets={0: 0}, retries=1, writer_fields=V2_FIELDS)
+    assert "commit conflict, retrying" in caplog.messages
+    loaded = catalog.load_table("bronze.events")
+    assert [f.name for f in loaded.schema().fields].count("device_type") == 1
+    assert loaded.scan().to_arrow().num_rows == 3
