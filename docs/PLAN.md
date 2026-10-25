@@ -121,10 +121,15 @@ and exists only to show the registry rejecting it.
 How each component handles v2:
 
 - `register-schemas --version 2` first calls the compatibility endpoint, then registers.
-- The producer sends v2 with `auto.register.schemas=false` and looks up the schema id.
+  `register-schemas --check-only PATH` only calls the compatibility endpoint and exits 1 when the
+  schema is incompatible; PATH is a file or the name of a schema shipped in the package.
+- The producer sends v2 with `auto.register.schemas=false` and looks up the schema id. Each
+  session gets one `device_type`, drawn from its own seeded RNG (`"<seed>:device"`), so the same
+  seed gives the same event ids in v1 and v2 and v1 output stays byte-identical.
 - The consumer decodes every record with its writer schema (`AvroDeserializer` without a reader
   schema). When it sees a new schema id, it maps the writer schema to Iceberg types and calls
-  `update_schema().union_by_name(...)` before appending.
+  `update_schema().union_by_name(...)` before appending. The evolution runs after the refresh and
+  before the offset fence, so the fence reads the metadata the schema commit returned.
 - Silver's `ensure_tables` adds missing nullable contract columns with `ALTER TABLE ... ADD
   COLUMN`; the silver projection uses `lit(null)` for a column bronze lacks.
 
@@ -199,7 +204,9 @@ Every append carries these snapshot summary properties:
 7. Two instances (`deploy.replicas: 2`) append to the same table under Iceberg's optimistic
    concurrency. Appends never conflict on data; a stale-metadata 409 is retried as above.
 8. Schema evolution runs under the same retry. `union_by_name` is a no-op when the other instance
-   already added the column.
+   already added the column; when both race, the loser gets `CommitFailedException` (no retries
+   inside PyIceberg), refreshes and finds the column. Arrow batches follow the evolved schema, so
+   v1 rows carry a null `device_type`.
 9. SIGTERM or SIGINT sets a flag. The consumer finishes the current batch (append and commit),
    calls `close()` and exits 0. Compose sets `stop_grace_period: 30s`.
 10. Test hook: hidden option `--crash-after-write-batch N` calls `os._exit(1)` after the Nth
@@ -268,10 +275,8 @@ How late data is shown:
   `--late-max-seconds`). They sit at higher offsets than newer events in the same partition, yet
   land in the window of their own event time. The manifest's per-minute expectation proves it,
   and a README query compares `event_time` order with `kafka_offset` order.
-- Too-late scenario, optional and gated by a smoke test: after the run-2 silver pass,
-  `produce --too-late N` sends events dated on day 1. If the watermark survives an `availableNow`
-  restart, silver drops them, and the check asserts they are missing and
-  `rows_dropped_late >= N`.
+- Too-late scenario: deferred (decision 27). It would send events dated on day 1 after the
+  run-2 silver pass and assert that silver drops them.
 
 ## Producer (`lakestream produce`)
 
@@ -307,7 +312,8 @@ manifest only after a clean flush.
 The manifest is JSON written to `--manifest` (shared volume `/runs`): run_id, seed,
 schema_version, base_time, span_minutes, started_at, finished_at; `produced{total, avro,
 malformed}`, clean_events, duplicates, late, late_event_ids; `invalid{total, by_reason}`,
-`malformed_by_kind`, `events_by_type`; sessions, orders_placed, payments_approved,
+`malformed_by_kind`, `events_by_type`, `device_type_events` (clean events carrying a
+`device_type`: all of them in a v2 run, 0 in a v1 run); sessions, orders_placed, payments_approved,
 approved_amount (decimal string); `minute_counts` (`[minute_utc, event_type, count]`),
 `delivery{delivered, failed}`. Invariants: `total = clean_events + duplicates + invalid.total +
 malformed` and `avro = total - malformed`.
@@ -316,11 +322,11 @@ malformed` and `avro = total - malformed`.
 
 | Command | Options |
 | --- | --- |
-| `register-schemas` | `--version 1\|2`, `--check-only PATH` |
-| `produce` | `--sessions 400 --users 250 --seed 42 --base-time --span-minutes 90 --rate 0 --duplicate-rate --late-rate --late-max-seconds --malformed --invalid --too-late 0 --schema-version 1 --manifest PATH` |
+| `register-schemas` | `--version 1\|2`, `--check-only PATH` (a file or a packaged schema name) |
+| `produce` | `--sessions 400 --users 250 --seed 42 --base-time --span-minutes 90 --rate 0 --duplicate-rate --late-rate --late-max-seconds --malformed --invalid --schema-version 1 --manifest PATH` (`--too-late` deferred, decision 27) |
 | `consume` | `--group bronze-ingest`, `--exit-when-idle SECONDS`, hidden `--crash-after-write-batch N` |
 | `lag` | `--group`, `--wait`, `--timeout 300`, `--json` (per partition: committed, end, lag, owner) |
-| `dlq` | `--limit 10` (prints the headers and a hex preview) |
+| `dlq` | `--limit 10` (oldest first: the headers and a hex preview; assigns partitions with a throwaway group and never commits) |
 | `silver` | `--trigger available-now\|processing-time`, `--interval` |
 | `gold` | none |
 | `maintain` | `--older-than-minutes 60`, `--retain-last 10`, `--table` (repeatable; default all) |
@@ -394,9 +400,10 @@ Trino `lake.properties`: `connector.name=iceberg`, `iceberg.catalog.type=rest`,
    offset.
 4. `run --rm spark-job silver --trigger available-now`, then `spark-job gold`.
 5. `run --rm cli check --manifest /runs/run1.json`.
-6. Phase 5 adds the evolution run: `register-schemas --version 2`, produce with
-   `--schema-version 2 --base-time 2026-01-02T00:00:00Z --seed 43`, then lag, silver, gold, and
-   `check` with both manifests.
+6. The evolution run: `register-schemas --version 2`; `register-schemas --check-only
+   shop_event.v2-breaking.avsc`, which must fail; produce with `--schema-version 2 --base-time
+   2026-01-02T00:00:00Z --seed 43 --manifest /runs/run2.json`; then lag, silver, gold, `check`
+   with both manifests, and `dlq --limit 3`.
 7. Last, `maintain`, then `check` again: compaction must not change any count.
 
 ## E2E check (`lakestream check`, through Trino; the DLQ is read from Kafka)
@@ -413,10 +420,12 @@ Every expectation is summed over the manifests.
 - Gold: the set of `(window_start, event_type, event_count)` rows equals `minute_counts` exactly;
   orders, approved payments and approved amount match; session count = `sessions`, and the sum of
   `event_count` = silver count.
-- Phase 5: `count(device_type is not null)` = clean events of the v2 manifests.
+- Phase 5: `count(device_type)` in silver = the sum of `device_type_events` (the clean events of
+  the v2 manifests).
 - Time travel: print the bronze count `FOR VERSION AS OF` the first append snapshot next to the
-  current count and assert first <= current; with two runs, also query gold at its earlier
-  snapshot.
+  current count and assert first <= current. With two or more manifests, also read
+  `sum(event_count)` of `gold.events_per_minute` at the snapshot of the previous gold run (the
+  second newest snapshot carrying `run_id`) and assert it is at most the current sum.
 - Retry until everything matches or `--timeout` passes; print expected vs actual; exit 1 on any
   mismatch.
 
@@ -466,7 +475,7 @@ and the testcontainers `get_exposed_port` problem goes away.
 | 2 | `feat/consumer-bronze` | s3, s3-init, iceberg-rest, consumer x2; `consumer/`, `lag`; Makefile `lag`, `test-integration` | crash-and-restart integration test passes; `lag --wait` reaches 0; bronze rows = `produced.avro` with unique coordinates (checked through PyIceberg) |
 | 3 | `feat/spark-silver-gold` | `spark` target and spark-job; `spark/` (session, tables, silver, gold, maintain, checkpoint, runlog); `silver`, `gold`, `maintain`; Makefile `test-spark`, `maintain` | `make test-spark` in WSL; silver and gold run twice in a row without changing counts |
 | 4 | `feat/trino-e2e` | trino and its catalog, cli service, `ops/expectations.py`, `ops/check.py`, `scripts/demo.sh`, `make demo`, README quickstart and queries | `make demo` exits 0 from fresh volumes; a second run gives the same gold |
-| 5 | `feat/evolution-dlq` | v2 and v2-breaking schemas, `--schema-version`, bronze `union_by_name`, silver column add, `dlq` command, demo run 2, optional `--too-late`, README "what this demonstrates" | `make demo` passes with both manifests; `register-schemas --check-only v2-breaking` reports incompatible |
+| 5 | `feat/evolution-dlq` | v2 and v2-breaking schemas, `--schema-version`, bronze `union_by_name`, silver column add, `dlq` command, demo run 2, README "what this demonstrates" (`--too-late` deferred, decision 27) | `make demo` passes with both manifests; `register-schemas --check-only v2-breaking` reports incompatible |
 | 6 | `feat/ci` | `ci.yml` (lint, test-fast, test-spark with Java 17, compose job: `make demo` then `make test-integration`), `security.yml`, Dependabot, SHA-pinned actions | CI green on the PR |
 
 Two implementers can work in parallel on disjoint files: phase 1 infra (compose, Dockerfile,
