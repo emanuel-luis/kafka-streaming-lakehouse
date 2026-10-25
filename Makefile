@@ -1,7 +1,7 @@
 SHELL := bash
 .DEFAULT_GOAL := help
 
-.PHONY: help install lint fmt test-fast test-spark test-integration test up down ps logs ui produce lag
+.PHONY: help install lint fmt test-fast test-spark test-integration test up down ps logs ui produce lag silver gold maintain
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-17s %s\n", $$1, $$2}'
@@ -52,3 +52,17 @@ produce: ## Run the producer (override options with ARGS="...")
 
 lag: ## Wait until the consumer group has caught up with the topic
 	docker compose run --rm --build cli lag --wait
+
+# Spark jobs run in the spark-job container (profile tools); --service-ports publishes the Spark UI
+# on http://localhost:14040 while a job runs.
+SPARK_RUN := docker compose run --rm --build --service-ports spark-job
+
+silver: ## Stream bronze into silver until caught up (available-now)
+	$(SPARK_RUN) silver --trigger available-now
+
+gold: ## Recompute the gold tables from silver
+	$(SPARK_RUN) gold
+
+MAINTAIN_ARGS ?=
+maintain: ## Compact and expire snapshots (options with MAINTAIN_ARGS="...")
+	$(SPARK_RUN) maintain $(MAINTAIN_ARGS)

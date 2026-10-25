@@ -16,6 +16,7 @@ portfolio repo; all data is synthetic.
 - `make lag`: `lag --wait` in the `cli` container (profile `tools`): the consumer group has caught up.
 - `make produce`: run the producer once inside the stack; the manifest lands in `/runs`.
 - `make ui`: Kafbat UI on http://localhost:18090 (profile `ui`).
+- `make silver` / `make gold` / `make maintain`: Spark jobs in the `spark-job` container.
 - Spark tests and jobs never run in Windows Python. On the owner's machine:
   `wsl -d Ubuntu -e bash -lc 'cd /mnt/d/dev/Pessoal/kafka-streaming-lakehouse && UV_PROJECT_ENVIRONMENT=$HOME/.venvs/kafka-streaming-lakehouse make test-spark'`.
 
@@ -27,11 +28,16 @@ portfolio repo; all data is synthetic.
 - `scripts/create-bucket.sh`: bucket creation run by `s3-init`. Services added in phase 2: `s3`
   (RustFS, ports 19000/19001), `iceberg-rest` (fixture, SQLite WAL on `catalog_data`, port 18181),
   `consumer` (2 replicas) and `cli` (profile `tools`).
-- `docker/app.Dockerfile`: `app` target (no JVM); phase 3 adds the `spark` target.
+- `docker/app.Dockerfile`: `app` target (no JVM) and `spark` target (Temurin 17 JRE, `--extra spark`,
+  Iceberg jars resolved into `/opt/spark-ivy` at build time). Compose service `spark-job` (profile
+  `tools`, checkpoints on volume `spark_checkpoints`, Spark UI on port 14040).
 - `scripts/create-topics.sh`: topic creation run by `kafka-init`.
 - `src/lakestream/`: `cli.py` (Typer, single entry point), `settings.py`, `logging.py`,
   `runmeta.py`, `contracts.py` (event types, reject reasons, watermark), `registry.py`,
-  `schemas/*.avsc`, `producer/` (pure generator + Kafka I/O + manifest).
+  `schemas/*.avsc`, `producer/` (pure generator + Kafka I/O + manifest), `consumer/` (bronze),
+  `spark/` (the only package that imports pyspark: `session`, `tables` (every Spark table schema),
+  pure `silver`/`gold` transforms, `silver_job`, `gold_job`, `maintain`, `runlog`, and the pure
+  `checkpoint` parser).
 - `tests/unit/` (no network, no JVM), `tests/integration/` (compose stack), `tests/spark/` (WSL/CI).
 
 ## Invariants

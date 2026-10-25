@@ -52,7 +52,7 @@ inside the command function, and nothing does work at import time.
 ## Pinned versions
 
 Checked on 2026-10-25. App base images: `python:3.12.15-slim-bookworm`, the JRE copied from
-`eclipse-temurin:17-jre` (pin the exact tag at build time), and `ghcr.io/astral-sh/uv` (pinned).
+`eclipse-temurin:17.0.20.1_1-jre-jammy` (tag checked on Docker Hub on 2026-10-25), and `ghcr.io/astral-sh/uv` (pinned).
 
 | Piece | Pin |
 | --- | --- |
