@@ -286,7 +286,7 @@ Send order is by event time, then the injections, applied to disjoint records:
 | Injection | Default | Effect |
 | --- | --- | --- |
 | duplicates | `--duplicate-rate 0.02` | a valid event re-sent with identical bytes, a few records later |
-| late | `--late-rate 0.03`, `--late-max-seconds 180` | the event's send position moves later; its event time is unchanged |
+| late | `--late-rate 0.03`, `--late-max-seconds 180` | the event's send position moves after the same user's next event, so it is overtaken in its partition; its event time is unchanged. The rate is a target: only events with a same-user successor within the delay qualify, and two neighbouring events of one user are never both late, so the manifest's `late` count is the real number |
 | malformed | `--malformed 10` | alternates `bad_magic` (not Avro-framed) and `truncated` (real header, cut body) |
 | invalid | `--invalid 14` | Avro-valid extra records, cycling through the 7 reasons |
 
