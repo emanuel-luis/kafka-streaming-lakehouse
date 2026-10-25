@@ -1,0 +1,83 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  # per event: a push to main would otherwise cancel a weekly or manual run left pending
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  UV_LOCKED: "1" # every uv sync and uv run fails if uv.lock is out of date
+
+jobs:
+  lint:
+    name: lint (ruff + mypy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with: { enable-cache: true }
+      - run: uv sync --locked --all-extras
+      - run: make lint
+
+  test-fast:
+    name: test-fast (unit)
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with: { enable-cache: true }
+      - run: uv sync --locked
+      - run: make test-fast
+
+  test-spark:
+    name: test-spark (local Spark, Java 17)
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with: { distribution: temurin, java-version: "17" }
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with: { enable-cache: true }
+      - run: uv sync --locked --extra spark
+      - run: make test-spark
+
+  e2e:
+    name: e2e (compose stack, make demo)
+    runs-on: ubuntu-latest
+    needs: lint
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with: { enable-cache: true }
+      - run: uv sync --locked
+      - run: make demo
+      - run: make test-integration
+      - name: Stack state and logs
+        if: failure()
+        run: |
+          docker compose --profile tools --profile ui ps -a
+          docker compose --profile tools --profile ui logs --no-color --tail 200
+      - name: Remove the stack
+        if: always()
+        run: make down
