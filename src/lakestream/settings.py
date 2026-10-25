@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,3 +41,32 @@ class ProducerSettings(_Base):
     malformed: int = 10
     invalid: int = 14
     manifest: Path | None = None
+
+
+class S3Settings(_Base):
+    model_config = SettingsConfigDict(env_prefix="S3_")
+
+    endpoint: str = "http://localhost:19000"
+    access_key: SecretStr = SecretStr("lake_admin")
+    secret_key: SecretStr = SecretStr("lake_secret_pw")
+    region: str = "us-east-1"
+    bucket: str = "lakehouse"
+
+
+class IcebergSettings(_Base):
+    model_config = SettingsConfigDict(env_prefix="ICEBERG_")
+
+    rest_uri: str = "http://localhost:18181"
+    warehouse: str = "s3://lakehouse/warehouse"
+    catalog: str = "lake"
+
+
+class ConsumerSettings(_Base):
+    model_config = SettingsConfigDict(env_prefix="CONSUMER_")
+
+    group_id: str = "bronze-ingest"
+    batch_max_messages: int = 2000
+    batch_max_seconds: float = 5
+    write_retries: int = 5
+    bronze_table: str = "bronze.events"
+    heartbeat_file: Path = Path("/tmp/consumer-heartbeat")
