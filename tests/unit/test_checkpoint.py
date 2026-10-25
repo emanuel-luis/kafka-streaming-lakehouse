@@ -3,7 +3,13 @@ from pathlib import Path
 
 import pytest
 
-from lakestream.spark.checkpoint import clamp_older_than, committed_snapshot_id, parse_offset_file
+from lakestream.spark.checkpoint import (
+    clamp_older_than,
+    committed_snapshot_id,
+    initial_snapshot_id,
+    parse_offset_file,
+    protected_snapshot_ids,
+)
 
 # The shape Spark 4.1 writes with an Iceberg 1.12 source (one source per query).
 OFFSET_FILE = (
@@ -63,6 +69,37 @@ def test_committed_snapshot_without_a_commit(tmp_path: Path) -> None:
     assert committed_snapshot_id(tmp_path) is None  # batch 0 planned, not committed
     _write(tmp_path, "commits", 1, "v1\n{}")
     assert committed_snapshot_id(tmp_path) is None  # offsets/1 already purged or missing
+
+
+# Copied from a real run (Spark 4.1.3, iceberg-spark-runtime-4.1_2.13 1.12.0; `conf` shortened).
+REAL_OFFSET_FILE = (
+    "v1\n"
+    '{"batchWatermarkMs":1767220192781,"batchTimestampMs":1792953154597,"conf":'
+    '{"spark.sql.streaming.stateStore.providerClass":'
+    '"org.apache.spark.sql.execution.streaming.state.HDFSBackedStateStoreProvider"}}\n'
+    '{"version":1,"snapshot_id":8126126696787250935,"position":1,"scan_all_files":false}'
+)
+REAL_INITIAL_OFFSET = (
+    '{"version":1,"snapshot_id":6457336699114277973,"position":0,"scan_all_files":false}'
+)
+
+
+def test_real_checkpoint_files(tmp_path: Path) -> None:
+    assert parse_offset_file(REAL_OFFSET_FILE) == 8126126696787250935
+    _write(tmp_path, "offsets", 1, REAL_OFFSET_FILE)
+    _write(tmp_path, "commits", 1, 'v1\n{"nextBatchWatermarkMs":1767220192781}')
+    assert protected_snapshot_ids(tmp_path) is None  # no initial offset yet
+    (tmp_path / "sources" / "0" / "offsets").mkdir(parents=True)
+    (tmp_path / "sources" / "0" / "offsets" / "0").write_text(REAL_INITIAL_OFFSET, "utf-8")
+    assert initial_snapshot_id(tmp_path) == 6457336699114277973
+    assert protected_snapshot_ids(tmp_path) == [6457336699114277973, 8126126696787250935]
+
+
+def test_protected_snapshots_need_a_committed_batch(tmp_path: Path) -> None:
+    (tmp_path / "sources" / "0" / "offsets").mkdir(parents=True)
+    (tmp_path / "sources" / "0" / "offsets" / "0").write_text(REAL_INITIAL_OFFSET, "utf-8")
+    assert protected_snapshot_ids(tmp_path) is None
+    assert initial_snapshot_id(tmp_path / "missing") is None
 
 
 def test_clamp_older_than() -> None:

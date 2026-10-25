@@ -8,8 +8,13 @@ Format assumptions (Spark 4.1, Iceberg 1.12), checked by the unit tests:
   restart re-runs batch N from the end offset of the last committed batch, so that offset (not
   the newest `offsets/N`) is the oldest position the stream may still read.
 - Iceberg's source offset is StreamingOffset JSON:
-  `{"version":1,"snapshot_id":N,"position":N,"scan_all_files":false}`; Iceberg writes the id as
-  a string, and a number is accepted too.
+  `{"version":1,"snapshot_id":N,"position":N,"scan_all_files":false}`; Iceberg 1.12 writes the
+  id as a number, and a string is accepted too.
+- `<checkpoint>/sources/0/offsets/0` is Iceberg's initial offset, written once when the query
+  first starts: the bare StreamingOffset JSON of the oldest snapshot it will read. Iceberg 1.12's
+  `prepareForTriggerAvailableNow` plans from this offset on every available-now run (checked in
+  the bytecode of iceberg-spark-runtime-4.1_2.13 1.12.0), so expiring that snapshot breaks every
+  later available-now run with "Cannot load current offset at snapshot ..." (decision 24).
 """
 
 import json
@@ -26,7 +31,11 @@ def parse_offset_file(text: str) -> int | None:
         return None
     if lines[0].strip() != OFFSET_LOG_VERSION:
         raise ValueError(f"unsupported offset log version {lines[0]!r}, expected 'v1'")
-    for line in lines[2:]:
+    return _first_snapshot_id(lines[2:])
+
+
+def _first_snapshot_id(lines: list[str]) -> int | None:
+    for line in lines:
         try:
             offset = json.loads(line)
         except ValueError:
@@ -34,6 +43,14 @@ def parse_offset_file(text: str) -> int | None:
         if isinstance(offset, dict) and offset.get("snapshot_id") is not None:
             return int(offset["snapshot_id"])
     return None
+
+
+def initial_snapshot_id(checkpoint_dir: Path) -> int | None:
+    """Snapshot id of Iceberg's initial offset (`sources/0/offsets/0`), or None when absent."""
+    path = checkpoint_dir / "sources" / "0" / "offsets" / "0"
+    if not path.is_file():
+        return None
+    return _first_snapshot_id(path.read_text(encoding="utf-8").splitlines())
 
 
 def _highest_batch(log_dir: Path) -> int | None:
@@ -50,6 +67,18 @@ def committed_snapshot_id(checkpoint_dir: Path) -> int | None:
     if not offsets.is_file():
         return None
     return parse_offset_file(offsets.read_text(encoding="utf-8"))
+
+
+def protected_snapshot_ids(checkpoint_dir: Path) -> list[int] | None:
+    """Snapshots of the stream's source that expiry must keep: initial and last committed.
+
+    None when either is unknown (no checkpoint yet, or a layout these assumptions do not cover):
+    the caller must then not expire the source table at all.
+    """
+    initial, committed = initial_snapshot_id(checkpoint_dir), committed_snapshot_id(checkpoint_dir)
+    if initial is None or committed is None:
+        return None
+    return [initial, committed]
 
 
 def clamp_older_than(requested: datetime, resume_commits: list[datetime | None]) -> datetime | None:

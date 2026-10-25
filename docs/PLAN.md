@@ -434,9 +434,12 @@ N runs, so after a crash the restart re-reads from the end offset of batch N-1, 
 committed one. The cutoff is the earliest of those snapshots' commit times (looked up in the
 `snapshots` metadata table). With no committed batch in a checkpoint, or a snapshot that cannot
 be found, bronze is not expired and the job logs why: expiring a snapshot silver has not read yet
-would break the stream. The consumer's resume logic
-loses nothing to expiry: offsets in snapshots older than the cutoff are already committed to
-Kafka.
+would break the stream. The cutoff also never passes the stream's initial offset
+(`sources/0/offsets/0`): Iceberg 1.12 plans every available-now run from it (decision 24). Since
+that is the oldest snapshot the query ever read, bronze snapshots are in practice kept for as long
+as the silver checkpoints live; compaction and manifest rewrites still run on bronze, and silver,
+gold and ops tables expire normally. The consumer's resume logic loses nothing to expiry: offsets
+in snapshots older than the cutoff are already committed to Kafka.
 
 ## Tests
 

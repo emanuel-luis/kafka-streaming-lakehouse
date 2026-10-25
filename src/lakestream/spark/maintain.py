@@ -7,7 +7,7 @@ from pathlib import Path
 from pyspark.sql import SparkSession
 
 from lakestream.runmeta import utc_now
-from lakestream.spark.checkpoint import clamp_older_than, committed_snapshot_id
+from lakestream.spark.checkpoint import clamp_older_than, protected_snapshot_ids
 from lakestream.spark.silver_job import BRONZE, QUERIES
 from lakestream.spark.tables import TABLES
 
@@ -28,16 +28,21 @@ def _commit_time(spark: SparkSession, catalog: str, snapshot_id: int) -> datetim
 def bronze_cutoff(
     spark: SparkSession, catalog: str, checkpoint_root: Path, requested: datetime
 ) -> datetime | None:
+    """Never expire a bronze snapshot a silver query may still plan from (decisions 22 and 24)."""
     commits: list[datetime | None] = []
     for name, _, _ in QUERIES:
-        snapshot_id = committed_snapshot_id(checkpoint_root / name)
-        commit = None if snapshot_id is None else _commit_time(spark, catalog, snapshot_id)
-        if commit is None:
-            log.warning(
-                "not expiring bronze: no resume snapshot for a silver query",
-                extra={"query": name, "snapshot_id": snapshot_id},
-            )
-        commits.append(commit)
+        snapshot_ids = protected_snapshot_ids(checkpoint_root / name)
+        if snapshot_ids is None:
+            log.warning("not expiring bronze: unknown silver checkpoint", extra={"query": name})
+            return None
+        for snapshot_id in snapshot_ids:
+            commit = _commit_time(spark, catalog, snapshot_id)
+            if commit is None:
+                log.warning(
+                    "not expiring bronze: a protected snapshot is gone",
+                    extra={"query": name, "snapshot_id": snapshot_id},
+                )
+            commits.append(commit)
     return clamp_older_than(requested, commits)
 
 

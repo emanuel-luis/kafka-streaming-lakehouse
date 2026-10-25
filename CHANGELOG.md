@@ -24,8 +24,8 @@ All notable changes to this project are documented here. The format follows
 - Spark job layer: `lakestream silver` (two Iceberg streaming queries from bronze into
   `silver.events` and `silver.rejects`, `available-now` or `processing-time`), `lakestream gold`
   (recompute of the three gold tables from one silver snapshot), `lakestream maintain`
-  (compaction, manifest rewrite, snapshot expiry; bronze expiry never passes the snapshot the
-  silver queries resume from) and `lakestream spark-warmup`. Every job run appends a row to
+  (compaction, manifest rewrite, snapshot expiry; bronze expiry never passes the initial or the
+  resume snapshot of the silver queries) and `lakestream spark-warmup`. Every job run appends a row to
   `ops.job_runs`.
 - `spark` image target (Temurin 17 JRE, Iceberg packages baked in) and the `spark-job` compose
   service (profile `tools`); `make silver`, `make gold`, `make maintain`.
