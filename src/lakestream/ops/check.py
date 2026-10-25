@@ -81,6 +81,7 @@ def run_checks(exp: Expected, q: Query, dlq: set[tuple[int, int]]) -> list[Check
     rejects = Counter(dict(q("SELECT reject_reason, count(*) FROM silver.rejects GROUP BY 1")))
     silver, silver_distinct = q("SELECT count(*), count(DISTINCT event_id) FROM silver.events")[0]
     by_type = Counter(dict(q("SELECT event_type, count(*) FROM silver.events GROUP BY 1")))
+    devices = q("SELECT count(device_type) FROM silver.events")[0][0]
     # Only canonical UUIDs are inlined into the SQL; anything else counts as missing.
     late_ids = ", ".join(f"'{i}'" for i in sorted(exp.late_event_ids) if UUID_RE.fullmatch(i))
     late_sql = f"SELECT count(DISTINCT event_id) FROM silver.events WHERE event_id IN ({late_ids})"
@@ -111,6 +112,7 @@ def run_checks(exp: Expected, q: Query, dlq: set[tuple[int, int]]) -> list[Check
         _eq("silver rows", exp.silver_rows, silver),
         _eq("silver distinct event_id", exp.silver_rows, silver_distinct),
         _eq("silver per type", dict(exp.events_by_type), dict(by_type)),
+        _eq("silver rows with device_type (v2 runs)", exp.device_type_events, devices),
         _eq("silver late ids present", len(exp.late_event_ids), present),
         _eq("silver last run rows_dropped_late", 0, dropped[0][0] if dropped else None),
         _set_check("gold events_per_minute rows", expected_minutes, minutes),
@@ -133,6 +135,24 @@ def time_travel(q: Query) -> Check:
     )
     name = f"bronze time travel: first append snapshot {snapshot} <= current"
     return Check(name, f"<= {current}", first, first is not None and first <= current)
+
+
+def gold_time_travel(q: Query) -> Check:
+    """gold.events_per_minute at the snapshot of the previous gold run next to now."""
+    current = q("SELECT sum(event_count) FROM gold.events_per_minute")[0][0]
+    runs = q(
+        'SELECT snapshot_id FROM gold."events_per_minute$snapshots"'
+        " WHERE element_at(summary, 'run_id') IS NOT NULL ORDER BY committed_at DESC LIMIT 2"
+    )
+    snapshot = int(runs[1][0]) if len(runs) == 2 else None
+    earlier = (
+        q(f"SELECT sum(event_count) FROM gold.events_per_minute FOR VERSION AS OF {snapshot}")[0][0]
+        if snapshot is not None
+        else None
+    )
+    name = f"gold time travel: events at the previous gold run (snapshot {snapshot}) <= current"
+    ok = earlier is not None and current is not None and earlier <= current
+    return Check(name, f"<= {current}", earlier, ok)
 
 
 def render(checks: Sequence[Check]) -> str:
@@ -161,6 +181,8 @@ def _attempt(
         checks = run_checks(exp, q, dlq_coordinates(kafka))
         if with_time_travel:
             checks.append(time_travel(q))
+            if exp.manifests >= 2:  # one gold run per producer run
+                checks.append(gold_time_travel(q))
         return checks
 
 
