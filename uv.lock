@@ -717,6 +717,11 @@ dependencies = [
     { name = "typer" },
 ]
 
+[package.optional-dependencies]
+spark = [
+    { name = "pyspark" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "hypothesis" },
@@ -731,8 +736,10 @@ requires-dist = [
     { name = "confluent-kafka", extras = ["avro", "schemaregistry"], specifier = "==2.16.0" },
     { name = "pydantic-settings", specifier = ">=2.16.1" },
     { name = "pyiceberg", extras = ["pyarrow"], specifier = "==0.12.0" },
+    { name = "pyspark", marker = "extra == 'spark'", specifier = "==4.1.3" },
     { name = "typer", specifier = ">=0.27.3" },
 ]
+provides-extras = ["spark"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1087,6 +1094,15 @@ wheels = [
 ]
 
 [[package]]
+name = "py4j"
+version = "0.10.9.9"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/38/31/0b210511177070c8d5d3059556194352e5753602fa64b85b7ab81ec1a009/py4j-0.10.9.9.tar.gz", hash = "sha256:f694cad19efa5bd1dee4f3e5270eb406613c974394035e5bfc4ec1aba870b879", size = 761089, upload-time = "2025-01-15T03:53:18.624Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/bd/db/ea0203e495be491c85af87b66e37acfd3bf756fd985f87e46fc5e3bf022c/py4j-0.10.9.9-py2.py3-none-any.whl", hash = "sha256:c7c26e4158defb37b0bb124933163641a2ff6e3a3913f7811b0ddbe07ed61533", size = 203008, upload-time = "2025-01-15T03:53:15.648Z" },
+]
+
+[[package]]
 name = "pyarrow"
 version = "26.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1426,6 +1442,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/d8/8e/d038e43c68ad871f14014e853ea26fd89f74de56adb32248dde6df8c01e1/pyroaring-1.2.0-cp315-cp315t-win_amd64.whl", hash = "sha256:2f940c8aeebbb5c5c0dba828159f6c9d3da870f771f099cb67a60f1adf4bf11c", size = 310716, upload-time = "2026-10-02T23:14:41.246Z" },
     { url = "https://files.pythonhosted.org/packages/81/48/aff0a85aa77fc8c99181342e7aa4bb97e9864aca153d4ef67113553da572/pyroaring-1.2.0-cp315-cp315t-win_arm64.whl", hash = "sha256:295092bf7fe7e56b9b6d013172ed32fd8e20e6471cb9edb9ec5f41d5418c84c6", size = 263442, upload-time = "2026-10-02T23:14:42.571Z" },
 ]
+
+[[package]]
+name = "pyspark"
+version = "4.1.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "py4j" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a7/ae/33e589ae3cf03c2e9bb78139de00bdfbdc083ebc45b9a4c282f5e33efe70/pyspark-4.1.3.tar.gz", hash = "sha256:b600238e771e45618a58beaf9d63cfd9aa06f61ce193244cedf890a04a4409f7", size = 455504008, upload-time = "2026-07-15T10:39:01.647Z" }
 
 [[package]]
 name = "pytest"

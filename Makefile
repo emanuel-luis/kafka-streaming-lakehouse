@@ -1,18 +1,18 @@
 SHELL := bash
 .DEFAULT_GOAL := help
 
-.PHONY: help install lint fmt test-fast test-integration test up down ps logs ui produce lag
+.PHONY: help install lint fmt test-fast test-spark test-integration test up down ps logs ui produce lag
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-17s %s\n", $$1, $$2}'
 
 install: ## Install dependencies
-	uv sync
+	uv sync --all-extras
 
 lint: ## Ruff check, ruff format check, mypy
-	uv run ruff check
-	uv run ruff format --check
-	uv run mypy
+	uv run --all-extras ruff check
+	uv run --all-extras ruff format --check
+	uv run --all-extras mypy
 
 fmt: ## Format and apply safe lint fixes
 	uv run ruff format
@@ -20,6 +20,9 @@ fmt: ## Format and apply safe lint fixes
 
 test-fast: ## Unit tests, no stack needed
 	uv run pytest
+
+test-spark: ## Spark tests (WSL or CI, never Windows Python)
+	uv run --extra spark pytest -m spark
 
 test-integration: ## Integration tests (stack must be up)
 	uv run pytest -m integration
