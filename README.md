@@ -42,6 +42,29 @@ All tables are Iceberg on S3-compatible object storage (RustFS) behind an Iceber
 and everything runs in Docker Compose. Design notes are in [docs/PLAN.md](docs/PLAN.md) and the
 reasons behind each choice in [docs/DECISIONS.md](docs/DECISIONS.md).
 
+## Tech stack
+
+Python 3.12 (uv, Typer, pydantic-settings), Apache Kafka in KRaft mode and Schema Registry
+(Confluent Platform 8.3.2 images), Avro, confluent-kafka, Apache Iceberg 1.12 with an Iceberg REST catalog,
+PyIceberg 0.12, Apache Spark 4.1 (Structured Streaming), Trino 484, RustFS as S3-compatible
+storage, Docker Compose. Quality gates: ruff, mypy (strict), pytest with Hypothesis.
+
+## Project structure
+
+```
+compose.yaml            the whole stack (project kafka-streaming-lakehouse)
+docker/app.Dockerfile   app image (no JVM) and spark image (JRE, Iceberg jars baked in)
+trino/catalog/          Trino Iceberg catalog
+scripts/                topic and bucket init, demo.sh
+src/lakestream/
+  producer/             seeded event generator, Kafka I/O, run manifest
+  consumer/             Avro decode, DLQ, idempotent bronze appends
+  spark/                silver and gold transforms and jobs, table maintenance
+  ops/                  lag, expectations from manifests, end-to-end check
+tests/                  unit, spark (WSL/CI), integration (compose stack)
+docs/                   PLAN.md (contracts), DECISIONS.md (why)
+```
+
 ## Quickstart
 
 Prerequisites: Docker with Compose v2, `make` and `bash`. Give Docker about 8 GB of memory: the
@@ -50,6 +73,8 @@ bound to 127.0.0.1 in the 1xxxx range (Trino on 18080); change them in `.env` (c
 `.env.example`).
 
 ```bash
+git clone https://github.com/emanuel-luis/kafka-streaming-lakehouse.git
+cd kafka-streaming-lakehouse
 make demo
 ```
 
