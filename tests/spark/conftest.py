@@ -3,6 +3,10 @@ import time
 from collections.abc import Iterator
 
 import pytest
+
+# Skip the whole directory (instead of failing collection) when the `spark` extra is missing.
+pytest.importorskip("pyspark")
+
 from pyspark.sql import SparkSession
 
 # Python collects timestamps as naive datetimes in the process time zone: pin it to UTC.

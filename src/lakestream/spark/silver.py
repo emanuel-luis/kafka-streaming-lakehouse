@@ -59,12 +59,12 @@ def _failures() -> list[Column]:
     non_positive = [F.col(f).isNotNull() & (F.col(f) <= 0) for f in ("unit_price", "amount")]
     currency, status = F.col("currency"), F.col("payment_status")
     failures = [
-        ~_full_match("event_id", "(?i)" + contracts._UUID.pattern),
+        ~_full_match("event_id", "(?i)" + contracts.UUID_RE.pattern),
         ~F.coalesce(F.col("event_type").isin(*contracts.EVENT_TYPES), F.lit(False)),
         missing,
         quantity.isNotNull() & ((quantity < 1) | (quantity > 100)),
         non_positive[0] | non_positive[1],
-        currency.isNotNull() & ~_full_match("currency", contracts._CURRENCY.pattern),
+        currency.isNotNull() & ~_full_match("currency", contracts.CURRENCY_RE.pattern),
         status.isNotNull() & ~status.isin(*contracts.PAYMENT_STATUSES),
     ]
     if len(failures) != len(REJECT_REASONS):

@@ -424,9 +424,15 @@ For each table: `CALL lake.system.rewrite_data_files(table => ..., options =>
 map('min-input-files','2'))`, then `rewrite_manifests`, then `expire_snapshots(older_than => ...,
 retain_last => ...)`. Compaction writes `replace` snapshots, which the silver stream skips (it
 also sets the skip-overwrite and skip-delete options). For bronze, the `older_than` cutoff is
-clamped so it never passes the snapshot recorded in the latest offset file of
-`/checkpoints/silver_events` (`checkpoint.py` parses `snapshot_id` with pure, unit-tested code):
-expiring a snapshot silver has not read yet would break the stream. The consumer's resume logic
+clamped so it never passes the commit time of the snapshot the silver streams resume from. For
+each of `/checkpoints/silver_events` and `/checkpoints/silver_rejects` (both read bronze),
+`checkpoint.py` takes the highest batch id under `commits/` and parses `snapshot_id` from
+`offsets/<that id>` with pure, unit-tested code. The newest `offsets/N` is written before batch
+N runs, so after a crash the restart re-reads from the end offset of batch N-1, the last
+committed one. The cutoff is the earliest of those snapshots' commit times (looked up in the
+`snapshots` metadata table). With no committed batch in a checkpoint, or a snapshot that cannot
+be found, bronze is not expired and the job logs why: expiring a snapshot silver has not read yet
+would break the stream. The consumer's resume logic
 loses nothing to expiry: offsets in snapshots older than the cutoff are already committed to
 Kafka.
 
