@@ -122,6 +122,10 @@ def test_gold_time_travel() -> None:
     answers["FOR VERSION AS OF 201"] = [(30,)]  # more events in the past than now
     assert not gold_time_travel(q).ok
 
+    answers["events_per_minute$snapshots"] = []  # the gold writer did not tag its commits
+    untagged = gold_time_travel(q)
+    assert not untagged.ok and not untagged.skipped
+
     answers["events_per_minute$snapshots"] = [(202,)]  # a single gold run: nothing to compare
     skip = gold_time_travel(q)
     assert skip.ok and skip.skipped and "no earlier gold run" in skip.name

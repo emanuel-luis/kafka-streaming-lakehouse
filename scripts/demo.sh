@@ -32,6 +32,23 @@ run() { # run <step> <service whose logs help on failure, or ""> <compose args..
   docker compose "$@"
 }
 
+check_both() { # check_both <step>: the check over both manifests, which must time travel gold
+  local out
+  step=$1 logs_of=trino
+  echo
+  echo "==> ${step}"
+  # tee keeps the output visible while the check retries; pipefail keeps its exit code
+  if ! out=$(docker compose run --rm cli check --manifest "${RUN1}" --manifest "${RUN2}" 2>&1 |
+    tee /dev/stderr); then
+    false
+  fi
+  # Gold runs after each produce and maintenance keeps both snapshots: a skip here is a bug.
+  if [[ ${out} == *"gold time travel skipped"* ]]; then
+    echo "gold time travel was skipped, but the demo keeps both gold runs" >&2
+    false
+  fi
+}
+
 run "fresh stack (down -v)" "" --profile tools --profile ui down -v --remove-orphans
 run "up --wait" "" up -d --build --wait
 run "produce --seed 42 (schema v1)" kafka run --rm producer produce --seed 42 --manifest "${RUN1}"
@@ -63,11 +80,11 @@ run "produce --seed 43 (schema v2)" kafka run --rm producer produce --schema-ver
 run "lag --wait (run 2)" consumer run --rm cli lag --wait --timeout 300
 run "silver (run 2)" iceberg-rest run --rm spark-job silver --trigger available-now
 run "gold (run 2)" iceberg-rest run --rm spark-job gold
-run "check runs 1 and 2" trino run --rm cli check --manifest "${RUN1}" --manifest "${RUN2}"
+check_both "check runs 1 and 2"
 run "dlq (first 3)" kafka run --rm cli dlq --limit 3
 
 run "maintain" iceberg-rest run --rm spark-job maintain
-run "check after maintain" trino run --rm cli check --manifest "${RUN1}" --manifest "${RUN2}"
+check_both "check after maintain"
 
 echo
 echo "demo passed. Query it: docker compose exec trino trino --catalog lake"

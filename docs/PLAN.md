@@ -425,7 +425,11 @@ Every expectation is summed over the manifests.
 - Time travel: print the bronze count `FOR VERSION AS OF` the first append snapshot next to the
   current count and assert first <= current. With two or more manifests, also read
   `sum(event_count)` of `gold.events_per_minute` at the snapshot of the previous gold run (the
-  second newest snapshot carrying `run_id`) and assert it is at most the current sum.
+  second newest snapshot carrying `run_id`) and assert it is at most the current sum. No gold
+  snapshot with a `run_id` is a failure (the gold writer did not tag its commits); exactly one is
+  printed as a labelled skip (gold ran once after every manifest, or maintenance expired the
+  earlier snapshot). `make demo` runs gold after each produce and keeps them through maintenance,
+  so it fails on that skip too.
 - Retry until everything matches or `--timeout` passes; print expected vs actual; exit 1 on any
   mismatch.
 

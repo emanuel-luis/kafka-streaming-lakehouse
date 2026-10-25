@@ -139,16 +139,23 @@ def time_travel(q: Query) -> Check:
 
 
 def gold_time_travel(q: Query) -> Check:
-    """gold.events_per_minute at the snapshot of the previous gold run next to now."""
+    """gold.events_per_minute at the snapshot of the previous gold run next to now.
+
+    Called with two or more manifests. No gold snapshot with a `run_id` fails: the gold writer
+    did not tag its commits. Exactly one is a labelled skip (gold ran once after every manifest,
+    or maintenance expired the earlier run's snapshot); the other gold checks still catch wrong
+    data.
+    """
     current = q("SELECT sum(event_count) FROM gold.events_per_minute")[0][0]
     runs = q(
         'SELECT snapshot_id FROM gold."events_per_minute$snapshots"'
         " WHERE element_at(summary, 'run_id') IS NOT NULL ORDER BY committed_at DESC LIMIT 2"
     )
-    if len(runs) < 2:
-        # Gold ran once after every manifest, or maintenance expired the earlier run's snapshot.
-        # The other gold checks still catch wrong data.
-        reason = f"{len(runs)} gold snapshot(s) with a run_id, no earlier gold run to compare"
+    if not runs:
+        name = "gold time travel: gold snapshots carrying a run_id"
+        return Check(name, ">= 1", 0, ok=False)
+    if len(runs) == 1:
+        reason = "1 gold snapshot with a run_id, no earlier gold run to compare"
         return Check(f"gold time travel skipped: {reason}", "-", current, ok=True, skipped=True)
     snapshot = int(runs[1][0])
     earlier = q(
