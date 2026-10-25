@@ -1,0 +1,164 @@
+# Memory limits for the phase 1 stack (target total under 2 GB):
+#   kafka 1g (heap 512m) | schema-registry 512m (heap 256m) = 1.5 GB long-running.
+#   On demand: kafka-ui 512m (profile ui), producer 256m (profile tools); one-shot init
+#   containers: kafka-init 384m, schema-init 256m. Later phases add s3, iceberg-rest, consumer,
+#   trino, spark-job and cli (about 4.7 GB with everything long-running up, see docs/PLAN.md).
+name: kafka-streaming-lakehouse
+
+x-app-env: &app-env
+  # Inside the network the services are reached by name, whatever the host-side .env says.
+  KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+  SCHEMA_REGISTRY_URL: http://schema-registry:8081
+  KAFKA_TOPIC: ${KAFKA_TOPIC:-shop.events}
+  KAFKA_DLQ_TOPIC: ${KAFKA_DLQ_TOPIC:-shop.events.dlq}
+
+x-app-build: &app-build
+  context: .
+  dockerfile: docker/app.Dockerfile
+  target: app
+
+services:
+  kafka:
+    image: confluentinc/cp-kafka:8.3.2
+    mem_limit: 1g
+    environment:
+      CLUSTER_ID: ${KAFKA_CLUSTER_ID:-MkU3OEVBNTcwNTJENDM2Qk}
+      KAFKA_NODE_ID: "1"
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:${KAFKA_PORT:-19092}
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_HEAP_OPTS: -Xms512m -Xmx512m
+    ports:
+      - "127.0.0.1:${KAFKA_PORT:-19092}:9092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    healthcheck:
+      # The tool is a second JVM inside the container; keep its heap small.
+      test: ["CMD-SHELL", "KAFKA_HEAP_OPTS=-Xmx64m kafka-broker-api-versions --bootstrap-server kafka:29092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 15s
+      retries: 20
+      start_period: 20s
+    networks: [lake]
+
+  kafka-init:
+    image: confluentinc/cp-kafka:8.3.2
+    mem_limit: 384m
+    depends_on:
+      kafka:
+        condition: service_healthy
+    entrypoint: ["sh", "/scripts/create-topics.sh"]
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:29092
+      KAFKA_TOPIC: ${KAFKA_TOPIC:-shop.events}
+      KAFKA_DLQ_TOPIC: ${KAFKA_DLQ_TOPIC:-shop.events.dlq}
+    volumes:
+      - ./scripts/create-topics.sh:/scripts/create-topics.sh:ro
+    restart: "no"
+    networks: [lake]
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:8.3.2
+    mem_limit: 512m
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: kafka:29092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+      SCHEMA_REGISTRY_SCHEMA_COMPATIBILITY_LEVEL: backward
+      SCHEMA_REGISTRY_HEAP_OPTS: -Xms256m -Xmx256m
+    ports:
+      - "127.0.0.1:${SCHEMA_REGISTRY_PORT:-18081}:8081"
+    healthcheck:
+      # The image has no curl (checked on 8.3.2); bash's /dev/tcp sends a plain HTTP request.
+      test:
+        - CMD
+        - bash
+        - -c
+        - >-
+          exec 3<>/dev/tcp/localhost/8081
+          && printf 'GET /subjects HTTP/1.0\r\nHost: localhost\r\n\r\n' >&3
+          && head -1 <&3 | grep -q ' 200 '
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    networks: [lake]
+
+  schema-init:
+    build: *app-build
+    image: lakestream-app:local
+    mem_limit: 256m
+    command: ["register-schemas", "--version", "1"]
+    depends_on:
+      schema-registry:
+        condition: service_healthy
+    environment:
+      <<: *app-env
+    restart: "no"
+    networks: [lake]
+
+  producer:
+    build: *app-build
+    image: lakestream-app:local
+    mem_limit: 256m
+    profiles: [tools]
+    command: ["produce"]
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      schema-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *app-env
+      PRODUCER_SESSIONS: ${PRODUCER_SESSIONS:-400}
+      PRODUCER_USERS: ${PRODUCER_USERS:-250}
+      PRODUCER_SEED: ${PRODUCER_SEED:-42}
+      PRODUCER_BASE_TIME: ${PRODUCER_BASE_TIME:-2026-01-01T00:00:00Z}
+      PRODUCER_SPAN_MINUTES: ${PRODUCER_SPAN_MINUTES:-90}
+      PRODUCER_RATE: ${PRODUCER_RATE:-0}
+      PRODUCER_DUPLICATE_RATE: ${PRODUCER_DUPLICATE_RATE:-0.02}
+      PRODUCER_LATE_RATE: ${PRODUCER_LATE_RATE:-0.03}
+      PRODUCER_LATE_MAX_SECONDS: ${PRODUCER_LATE_MAX_SECONDS:-180}
+      PRODUCER_MALFORMED: ${PRODUCER_MALFORMED:-10}
+      PRODUCER_INVALID: ${PRODUCER_INVALID:-14}
+    volumes:
+      - demo_runs:/runs
+    networks: [lake]
+
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:v1.5.0
+    mem_limit: 512m
+    profiles: [ui]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      schema-registry:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: lakestream
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: http://schema-registry:8081
+      DYNAMIC_CONFIG_ENABLED: "false"
+    ports:
+      - "127.0.0.1:${KAFKA_UI_PORT:-18090}:8080"
+    networks: [lake]
+
+networks:
+  lake:
+    driver: bridge
+
+volumes:
+  kafka_data:
+  demo_runs:
