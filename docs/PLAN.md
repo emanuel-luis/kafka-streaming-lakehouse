@@ -168,7 +168,8 @@ Every append carries these snapshot summary properties:
    `group.protocol=classic` (KIP-848 is a possible follow-up).
 2. Loop: `consume(num_messages, timeout)` accumulates records until
    `CONSUMER_BATCH_MAX_MESSAGES` (2000) or `CONSUMER_BATCH_MAX_SECONDS` (5). The consumer touches
-   its heartbeat file on every iteration.
+   its heartbeat file on every iteration. Each poll asks for at most the room left in the batch,
+   so `CONSUMER_BATCH_MAX_MESSAGES` is a hard cap, not a soft limit.
 3. Decode: parse the 5-byte header (magic byte 0 plus schema id) before deserializing. A frame
    that is not Avro, a schema id the registry answers 404 for, a fastavro decode error or a null
    value goes to the DLQ. A registry connection error or 5xx is transient and triggers a batch

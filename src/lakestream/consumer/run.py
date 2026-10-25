@@ -38,6 +38,8 @@ from lakestream.settings import (
 
 log = logging.getLogger("lakestream.consume")
 
+POLL_MAX_MESSAGES = 500
+
 
 def consumer_config(kafka: KafkaSettings, group: str, client_id: str) -> dict[str, Any]:
     return {
@@ -222,7 +224,9 @@ class BronzeConsumer:
         try:
             while not self.stop:
                 self._beat()
-                msgs = self.consumer.consume(num_messages=500, timeout=1.0)
+                msgs = self.consumer.consume(
+                    num_messages=min(POLL_MAX_MESSAGES, self.buffer.room()), timeout=1.0
+                )
                 for msg in msgs:
                     self._add(msg)
                 if msgs:

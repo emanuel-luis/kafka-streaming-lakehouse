@@ -37,6 +37,16 @@ def test_due_by_time_from_first_record() -> None:
     assert buf.due()
 
 
+def test_room() -> None:
+    buf = BatchBuffer(3, 5, Clock())
+    assert buf.room() == 3
+    buf.add(rec(0, 0))
+    assert buf.room() == 2
+    buf.add(rec(0, 1))
+    buf.add(rec(0, 2))
+    assert buf.room() == 1  # full: still at least 1
+
+
 def test_take_resets() -> None:
     clock = Clock()
     buf = BatchBuffer(100, 5, clock)

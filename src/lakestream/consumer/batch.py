@@ -42,6 +42,10 @@ class BatchBuffer:
             self._started = self._clock()
         self._recs.append(rec)
 
+    def room(self) -> int:
+        """How many more records fit before the batch is full; at least 1 so a poll never stalls."""
+        return max(1, self.max_messages - len(self._recs))
+
     def due(self) -> bool:
         if not self._recs or self._started is None:
             return False
