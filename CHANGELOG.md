@@ -8,6 +8,18 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Schema evolution: `ShopEvent` v2 adds an optional `device_type`. `register-schemas --version 2`
+  tests compatibility before registering, and `--check-only PATH` only tests a schema;
+  `shop_event.v2-breaking.avsc` shows the registry rejecting a required field with no default.
+- `lakestream produce --schema-version 1|2`; v2 events carry a seeded device per session and the
+  manifest counts them (`device_type_events`).
+- The consumer adds the columns of each new writer schema to bronze with `union_by_name` inside
+  the append retry; silver gains `device_type` (`ALTER TABLE ... ADD COLUMN` on an older table).
+- `lakestream dlq --limit N`: dead letters with their headers and a hex preview, read without
+  committing.
+- `lakestream check` reconciles `device_type` against the v2 manifests and, with two or more
+  manifests, reads gold at the previous gold run's snapshot.
+- `make demo` runs a second, schema v2 producer run and checks both manifests.
 - GitHub Actions: `ci.yml` (lint, then unit, Spark with Java 17 and an end-to-end job that runs
   `make demo` and `make test-integration`), `security.yml` (pip-audit over the locked
   dependencies) and weekly grouped Dependabot updates for actions and uv. Actions are pinned by SHA.

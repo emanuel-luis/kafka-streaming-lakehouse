@@ -21,7 +21,8 @@ portfolio repo; all data is synthetic.
 - CI (`.github/workflows/ci.yml`): `lint` gates `test-fast`, `test-spark` and `e2e` (`make demo`,
   `make test-integration`, `make down`); `UV_LOCKED=1`; actions pinned by SHA. `security.yml` runs
   pip-audit; Dependabot covers actions and uv, not Docker images.
-- `make demo`: `scripts/demo.sh`, the whole run from fresh volumes (a stack run: heavy lock).
+- `make demo`: `scripts/demo.sh`, the whole run from fresh volumes (a stack run: heavy lock): run 1
+  with schema v1, then v2, the rejected v2-breaking check and run 2, then maintain.
 - Spark tests and jobs never run in Windows Python. On the owner's machine:
   `wsl -d Ubuntu -e bash -lc 'cd /mnt/d/dev/Pessoal/kafka-streaming-lakehouse && UV_PROJECT_ENVIRONMENT=$HOME/.venvs/kafka-streaming-lakehouse make test-spark'`.
 
@@ -41,11 +42,13 @@ portfolio repo; all data is synthetic.
   `trino` (port 18080, heap via `JAVA_TOOL_OPTIONS`).
 - `src/lakestream/`: `cli.py` (Typer, single entry point), `settings.py`, `logging.py`,
   `runmeta.py`, `contracts.py` (event types, reject reasons, watermark), `registry.py`,
-  `schemas/*.avsc`, `producer/` (pure generator + Kafka I/O + manifest), `consumer/` (bronze),
+  `schemas/*.avsc` (v1, v2 with `device_type`, and v2-breaking, which only shows the registry
+  rejecting it), `producer/` (pure generator + Kafka I/O + manifest), `consumer/` (bronze, with
+  `union_by_name` evolution to each new writer schema),
   `spark/` (the only package that imports pyspark: `session`, `tables` (every Spark table schema),
   pure `silver`/`gold` transforms, `silver_job`, `gold_job`, `maintain`, `runlog`, and the pure
-  `checkpoint` parser), `ops/` (`lag`, pure `expectations` built from manifests, `check` through
-  the trino client).
+  `checkpoint` parser), `ops/` (`lag`, `dlq_show` (the `dlq` command), pure `expectations` built
+  from manifests, `check` through the trino client).
 - `tests/unit/` (no network, no JVM), `tests/integration/` (compose stack), `tests/spark/` (WSL/CI).
 
 ## Invariants

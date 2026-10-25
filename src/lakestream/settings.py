@@ -40,6 +40,7 @@ class ProducerSettings(_Base):
     late_max_seconds: int = 180
     malformed: int = 10
     invalid: int = 14
+    schema_version: int = 1
     manifest: Path | None = None
 
 

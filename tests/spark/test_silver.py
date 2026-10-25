@@ -8,6 +8,8 @@ from typing import Any
 import pytest
 from frames import BRONZE_SCHEMA, T0, bronze_df
 from pyspark.sql import SparkSession
+from pyspark.sql import functions as F
+from pyspark.sql.types import StringType, StructField, StructType
 
 from lakestream import contracts
 from lakestream.producer.generator import GenParams, make_invalid
@@ -149,3 +151,40 @@ def test_silver_events_dedupes_valid_rows(spark: SparkSession) -> None:
     ev = _base("page_view")
     later = {**ev, "event_time": T0 + timedelta(minutes=1)}
     assert len(silver.silver_events(bronze_df(spark, [ev, later])).collect()) == 1
+
+
+def test_device_type_is_null_until_bronze_has_it(spark: SparkSession) -> None:
+    good = _base("page_view")
+    [v1] = silver.silver_events(bronze_df(spark, [good])).collect()
+    assert v1.device_type is None
+    v2_bronze = bronze_df(spark, [good]).withColumn("device_type", F.lit("tablet"))
+    [v2] = silver.silver_events(v2_bronze).collect()
+    assert v2.device_type == "tablet"
+
+
+def test_dedupe_state_survives_a_new_bronze_column(spark: SparkSession, tmp_path: Path) -> None:
+    """Two available-now runs on one checkpoint; the source gains device_type in between."""
+    src, out, ckpt = tmp_path / "in", tmp_path / "out", tmp_path / "ckpt"
+    dup, a, b = _base("page_view"), _base("page_view"), _base("page_view")
+    v2_schema = StructType([*BRONZE_SCHEMA.fields, StructField("device_type", StringType())])
+
+    def run(schema: StructType) -> None:
+        stream = spark.readStream.schema(schema).parquet(str(src / "*"))
+        query = (
+            silver.silver_events(stream)
+            .writeStream.format("parquet")
+            .option("path", str(out))
+            .option("checkpointLocation", str(ckpt))
+            .trigger(availableNow=True)
+            .start()
+        )
+        query.awaitTermination()
+
+    bronze_df(spark, [dup, a]).write.parquet(str(src / "b1"))
+    run(BRONZE_SCHEMA)
+    bronze_df(spark, [dup, b]).withColumn("device_type", F.lit("mobile")).write.parquet(
+        str(src / "b2")
+    )
+    run(v2_schema)
+    rows = {r.event_id: r.device_type for r in spark.read.parquet(str(out)).collect()}
+    assert rows == {dup["event_id"]: None, a["event_id"]: None, b["event_id"]: "mobile"}

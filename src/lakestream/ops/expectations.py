@@ -14,6 +14,7 @@ from typing import Any
 
 @dataclass(frozen=True)
 class Expected:
+    manifests: int = 0
     bronze_rows: int = 0
     dlq_records: int = 0
     rejects: int = 0
@@ -26,6 +27,7 @@ class Expected:
     orders_placed: int = 0
     payments_approved: int = 0
     approved_amount: Decimal = Decimal("0.00")
+    device_type_events: int = 0  # silver rows with a device_type (schema v2 runs)
 
 
 def parse_minute(value: str) -> datetime:
@@ -38,13 +40,14 @@ def parse_minute(value: str) -> datetime:
 
 def build_expected(manifests: Iterable[Mapping[str, Any]]) -> Expected:
     """Sum the expectations of every manifest. Raises KeyError on a manifest missing a field."""
-    bronze = dlq = rejects = silver = sessions = orders = approved = 0
+    runs = bronze = dlq = rejects = silver = sessions = orders = approved = devices = 0
     by_reason: Counter[str] = Counter()
     by_type: Counter[str] = Counter()
     minutes: Counter[tuple[datetime, str]] = Counter()
     late: set[str] = set()
     amount = Decimal("0.00")
     for m in manifests:
+        runs += 1
         bronze += m["produced"]["avro"]
         dlq += m["produced"]["malformed"]
         rejects += m["invalid"]["total"]
@@ -58,7 +61,9 @@ def build_expected(manifests: Iterable[Mapping[str, Any]]) -> Expected:
         orders += m["orders_placed"]
         approved += m["payments_approved"]
         amount += Decimal(m["approved_amount"])
+        devices += m.get("device_type_events", 0)  # manifests before schema v2 lack it
     return Expected(
+        manifests=runs,
         bronze_rows=bronze,
         dlq_records=dlq,
         rejects=rejects,
@@ -71,4 +76,5 @@ def build_expected(manifests: Iterable[Mapping[str, Any]]) -> Expected:
         orders_placed=orders,
         payments_approved=approved,
         approved_amount=amount,
+        device_type_events=devices,
     )

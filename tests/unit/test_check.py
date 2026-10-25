@@ -6,7 +6,14 @@ from typing import Any
 
 import pytest
 
-from lakestream.ops.check import Query, render, run_checks, time_travel
+from lakestream.ops.check import (
+    Check,
+    Query,
+    gold_time_travel,
+    render,
+    run_checks,
+    time_travel,
+)
 from lakestream.ops.expectations import Expected, build_expected
 from lakestream.settings import TrinoSettings
 
@@ -38,6 +45,7 @@ def _lake(exp: Expected, minutes: list[tuple[datetime, str, int]] | None = None)
         "silver.rejects": list(exp.rejects_by_reason.items()),
         "count(DISTINCT event_id) FROM silver.events\n": [(exp.silver_rows, exp.silver_rows)],
         "event_type, count(*)": list(exp.events_by_type.items()),
+        "count(device_type)": [(exp.device_type_events,)],
         "WHERE event_id IN": [(len(exp.late_event_ids),)],
         "ops.job_runs": [(0,)],
         "gold.events_per_minute": rows,
@@ -84,3 +92,43 @@ def test_trino_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(name)
     t = TrinoSettings(_env_file=None)
     assert (t.host, t.port, t.user, t.catalog) == ("127.0.0.1", 18080, "lakestream", "lake")
+
+
+def test_device_type_expectation_sums_v2_manifests() -> None:
+    v2 = {**MANIFEST, "schema_version": 2, "device_type_events": 10}
+    exp = build_expected([MANIFEST, v2])
+    assert (exp.manifests, exp.device_type_events) == (2, 10)
+    checks = {c.name: c for c in run_checks(exp, _lake(exp), {(0, 4), (1, 4)})}
+    assert checks["silver rows with device_type (v2 runs)"].ok
+    wrong = Expected(device_type_events=3)
+    lake = _lake(exp)
+    bad = {c.name: c for c in run_checks(wrong, lake, set())}
+    assert not bad["silver rows with device_type (v2 runs)"].ok
+
+
+def test_gold_time_travel() -> None:
+    answers = {
+        "SELECT sum(event_count) FROM gold.events_per_minute\n": [(20,)],
+        "events_per_minute$snapshots": [(202,), (201,)],
+        "FOR VERSION AS OF 201": [(10,)],
+    }
+
+    def q(sql: str) -> list[Any]:
+        [hit] = [v for k, v in answers.items() if k in sql + "\n"]
+        return hit
+
+    check = gold_time_travel(q)
+    assert check.ok and check.actual == 10 and "201" in check.name
+    answers["FOR VERSION AS OF 201"] = [(30,)]  # more events in the past than now
+    assert not gold_time_travel(q).ok
+
+    answers["events_per_minute$snapshots"] = []  # the gold writer did not tag its commits
+    untagged = gold_time_travel(q)
+    assert not untagged.ok and not untagged.skipped
+
+    answers["events_per_minute$snapshots"] = [(202,)]  # a single gold run: nothing to compare
+    skip = gold_time_travel(q)
+    assert skip.ok and skip.skipped and "no earlier gold run" in skip.name
+    report = render([skip, Check("x", 1, 1, True)])
+    assert report.splitlines()[0].startswith("skip gold time travel skipped:")
+    assert report.endswith("1/1 checks passed, 1 skipped")

@@ -1,10 +1,12 @@
 """Kafka I/O of `lakestream consume`: poll, decode, DLQ, bronze append, then commit offsets."""
 
+import json
 import logging
 import os
 import signal
 import socket
 import time
+from functools import partial
 from types import FrameType
 from typing import Any
 
@@ -13,6 +15,7 @@ from confluent_kafka.schema_registry import SchemaRegistryClient
 from confluent_kafka.schema_registry.avro import AvroDeserializer
 from pyiceberg.catalog import Catalog
 from pyiceberg.table import Table
+from pyiceberg.types import NestedField
 
 from lakestream.consumer.batch import (
     BatchBuffer,
@@ -25,6 +28,7 @@ from lakestream.consumer.batch import (
 from lakestream.consumer.bronze import (
     OffsetFenceError,
     append_batch,
+    avro_fields,
     bronze_schema,
     build_row,
     build_summary,
@@ -81,10 +85,12 @@ class BronzeConsumer:
             consumer_config(kafka, cfg.group_id, f"{socket.gethostname()}-{run_id}")
         )
         self.dlq = DlqWriter(kafka.bootstrap_servers, kafka.dlq_topic, cfg.group_id, run_id)
+        self.registry = SchemaRegistryClient({"url": registry_url})
+        # No reader schema: every record decodes with its writer schema.
         self.deserializer = AvroDeserializer(
-            SchemaRegistryClient({"url": registry_url}),
-            conf={"subject.name.strategy": lambda _ctx, _name: SUBJECT},
+            self.registry, conf={"subject.name.strategy": lambda _ctx, _name: SUBJECT}
         )
+        self.writer_fields: dict[int, list[NestedField]] = {}  # per schema id
         self.crash_after = crash_after_write_batch
         self.writes = 0
         self.batch_id = 0
@@ -147,6 +153,18 @@ class BronzeConsumer:
                 good.append((rec, schema_id, record))
         return good, bad
 
+    def _fields_of(self, schema_ids: set[int]) -> list[NestedField]:
+        """Iceberg columns of the writer schemas; a new schema id is looked up once."""
+        for sid in sorted(schema_ids - self.writer_fields.keys()):
+            schema = with_backoff(
+                partial(self.registry.get_schema, sid), self.cfg.write_retries, self._on_retry
+            )
+            if not schema.schema_str:
+                raise ValueError(f"the registry returned no schema text for id {sid}")
+            self.writer_fields[sid] = avro_fields(json.loads(schema.schema_str))
+            log.info("new writer schema", extra={"schema_id": sid})
+        return [f for sid in sorted(schema_ids) for f in self.writer_fields[sid]]
+
     def flush_batch(self) -> None:
         offsets = self.buffer.last_offsets()
         recs = self.buffer.take()
@@ -181,7 +199,12 @@ class BronzeConsumer:
                 dlq_records=len(bad),
             )
             append_batch(
-                self.table, rows, summary, first_offsets=first_offsets(recs), retries=retries
+                self.table,
+                rows,
+                summary,
+                first_offsets=first_offsets(recs),
+                retries=retries,
+                writer_fields=self._fields_of({sid for _, sid, _ in good}),
             )
             self.writes += 1
             if self.crash_after is not None and self.writes == self.crash_after:

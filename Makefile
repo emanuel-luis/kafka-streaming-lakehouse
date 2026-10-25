@@ -73,5 +73,5 @@ MANIFESTS ?= --manifest /runs/run1.json
 check: ## End-to-end check through Trino (manifests with MANIFESTS="--manifest ...")
 	docker compose run --rm --build cli check $(MANIFESTS)
 
-demo: ## Fresh stack, produce, silver, gold, check, maintain, check again
+demo: ## Fresh stack, run 1 (v1) and run 2 (v2) through every layer with checks, maintain, check
 	bash scripts/demo.sh

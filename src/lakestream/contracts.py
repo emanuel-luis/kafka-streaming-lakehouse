@@ -8,6 +8,7 @@ SUBJECT = "shop.events-value"
 EVENT_TYPES = ("page_view", "add_to_cart", "order_placed", "payment")
 PAYMENT_STATUSES = ("approved", "declined")
 PAYMENT_METHODS = ("card", "wallet", "bank_transfer")
+DEVICE_TYPES = ("mobile", "desktop", "tablet")  # schema v2
 WATERMARK_DELAY = "3 hours"
 MAX_SPAN_MINUTES = 150
 

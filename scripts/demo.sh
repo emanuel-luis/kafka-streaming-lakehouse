@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# make demo: a fresh stack, one seeded producer run through every layer, then the end-to-end check
-# through Trino before and after maintenance (docs/PLAN.md "make demo").
+# make demo: a fresh stack, a seeded v1 producer run through every layer and the end-to-end check
+# through Trino; then schema v2 (the registry rejects a breaking schema), a second run, the check
+# over both manifests, and the check again after maintenance (docs/PLAN.md "make demo").
 set -Eeuo pipefail # -E: the ERR trap also fires inside functions
 
 export MSYS_NO_PATHCONV=1 # Git Bash on Windows would rewrite /runs/... into a Windows path
 
-MANIFEST=/runs/run1.json
+RUN1=/runs/run1.json
+RUN2=/runs/run2.json
 step="" logs_of=""
 
 on_error() {
@@ -30,16 +32,59 @@ run() { # run <step> <service whose logs help on failure, or ""> <compose args..
   docker compose "$@"
 }
 
+check_both() { # check_both <step>: the check over both manifests, which must time travel gold
+  local out
+  step=$1 logs_of=trino
+  echo
+  echo "==> ${step}"
+  # tee keeps the output visible while the check retries; pipefail keeps its exit code
+  if ! out=$(docker compose run --rm cli check --manifest "${RUN1}" --manifest "${RUN2}" 2>&1 |
+    tee /dev/stderr); then
+    false
+  fi
+  # Gold runs after each produce and maintenance keeps both snapshots: a skip here is a bug.
+  if [[ ${out} == *"gold time travel skipped"* ]]; then
+    echo "gold time travel was skipped, but the demo keeps both gold runs" >&2
+    false
+  fi
+}
+
 run "fresh stack (down -v)" "" --profile tools --profile ui down -v --remove-orphans
 run "up --wait" "" up -d --build --wait
-run "produce --seed 42" kafka run --rm producer produce --seed 42 --manifest "${MANIFEST}"
+run "produce --seed 42 (schema v1)" kafka run --rm producer produce --seed 42 --manifest "${RUN1}"
 run "lag --wait" consumer run --rm cli lag --wait --timeout 300
 run "silver (available-now)" iceberg-rest \
   run --rm --build spark-job silver --trigger available-now
 run "gold" iceberg-rest run --rm spark-job gold
-run "check" trino run --rm cli check --manifest "${MANIFEST}"
+run "check run 1" trino run --rm cli check --manifest "${RUN1}"
+
+run "register-schemas --version 2" schema-registry run --rm cli register-schemas --version 2
+step="register-schemas --check-only v2-breaking (must be rejected)" logs_of=schema-registry
+echo
+echo "==> ${step}"
+# Only the CLI's own rejection counts: a registry error, a bad option or a compose failure must
+# fail the demo too, not pass as "rejected".
+if out=$(docker compose run --rm cli register-schemas --check-only shop_event.v2-breaking.avsc 2>&1)
+then
+  echo "${out}"
+  echo "the registry accepted a breaking schema" >&2
+  false
+elif [[ ${out} != *"incompatible:"* ]]; then
+  echo "${out}" >&2
+  echo "the check failed without the registry's rejection" >&2
+  false
+fi
+echo "${out}"
+run "produce --seed 43 (schema v2)" kafka run --rm producer produce --schema-version 2 \
+  --base-time 2026-01-02T00:00:00Z --seed 43 --manifest "${RUN2}"
+run "lag --wait (run 2)" consumer run --rm cli lag --wait --timeout 300
+run "silver (run 2)" iceberg-rest run --rm spark-job silver --trigger available-now
+run "gold (run 2)" iceberg-rest run --rm spark-job gold
+check_both "check runs 1 and 2"
+run "dlq (first 3)" kafka run --rm cli dlq --limit 3
+
 run "maintain" iceberg-rest run --rm spark-job maintain
-run "check after maintain" trino run --rm cli check --manifest "${MANIFEST}"
+check_both "check after maintain"
 
 echo
 echo "demo passed. Query it: docker compose exec trino trino --catalog lake"
