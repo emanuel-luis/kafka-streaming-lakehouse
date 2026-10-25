@@ -327,12 +327,12 @@ service-name endpoints.
 
 | Variable | Default (host) | In compose |
 | --- | --- | --- |
-| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:19092` | `kafka:29092` |
+| `KAFKA_BOOTSTRAP_SERVERS` | `127.0.0.1:19092` | `kafka:29092` |
 | `KAFKA_TOPIC`, `KAFKA_DLQ_TOPIC` | `shop.events`, `shop.events.dlq` | same |
-| `SCHEMA_REGISTRY_URL` | `http://localhost:18081` | `http://schema-registry:8081` |
-| `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION`, `S3_BUCKET` | `http://localhost:19000`, `lake_admin`, `lake_secret_pw`, `us-east-1`, `lakehouse` | `http://s3:9000` |
-| `ICEBERG_REST_URI`, `ICEBERG_WAREHOUSE`, `ICEBERG_CATALOG` | `http://localhost:18181`, `s3://lakehouse/warehouse`, `lake` | `http://iceberg-rest:8181` |
-| `TRINO_HOST`, `TRINO_PORT`, `TRINO_USER`, `TRINO_CATALOG` | `localhost`, `18080`, `lakestream`, `lake` | `trino`, `8080` |
+| `SCHEMA_REGISTRY_URL` | `http://127.0.0.1:18081` | `http://schema-registry:8081` |
+| `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION`, `S3_BUCKET` | `http://127.0.0.1:19000`, `lake_admin`, `lake_secret_pw`, `us-east-1`, `lakehouse` | `http://s3:9000` |
+| `ICEBERG_REST_URI`, `ICEBERG_WAREHOUSE`, `ICEBERG_CATALOG` | `http://127.0.0.1:18181`, `s3://lakehouse/warehouse`, `lake` | `http://iceberg-rest:8181` |
+| `TRINO_HOST`, `TRINO_PORT`, `TRINO_USER`, `TRINO_CATALOG` | `127.0.0.1`, `18080`, `lakestream`, `lake` | `trino`, `8080` |
 | `CONSUMER_GROUP_ID`, `CONSUMER_BATCH_MAX_MESSAGES`, `CONSUMER_BATCH_MAX_SECONDS`, `CONSUMER_WRITE_RETRIES`, `CONSUMER_BRONZE_TABLE`, `CONSUMER_HEARTBEAT_FILE` | `bronze-ingest`, `2000`, `5`, `5`, `bronze.events`, `/tmp/consumer-heartbeat` | same |
 | `PRODUCER_*` | the defaults of every `produce` option | same |
 | `SPARK_MASTER`, `SPARK_DRIVER_MEMORY`, `SPARK_IVY_DIR`, `SPARK_CHECKPOINT_ROOT` | `local[2]`, `1g`, unset, `/checkpoints` | `/opt/spark-ivy` |
@@ -370,7 +370,7 @@ Trino `lake.properties`: `connector.name=iceberg`, `iceberg.catalog.type=rest`,
 | spark-job | spark | tools | 2g | disabled | iceberg-rest |
 | kafka-ui | kafbat (cluster plus schema registry) | ui | 512m | | kafka |
 
-- Kafka listeners: INTERNAL `kafka:29092`, EXTERNAL advertised as `localhost:${KAFKA_PORT}`,
+- Kafka listeners: INTERNAL `kafka:29092`, EXTERNAL advertised as `127.0.0.1:${KAFKA_PORT}`,
   CONTROLLER. Host tools and integration tests use the EXTERNAL listener.
 - Volumes: `kafka_data`, `s3_data`, `catalog_data`, `spark_checkpoints`, `demo_runs` (at `/runs`).
 - Memory with everything long-running up is about 4.7 GB; a Spark job adds 2 GB (about 6.7 GB).

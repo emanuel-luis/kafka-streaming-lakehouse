@@ -12,7 +12,7 @@ class _Base(BaseSettings):
 class KafkaSettings(_Base):
     model_config = SettingsConfigDict(env_prefix="KAFKA_")
 
-    bootstrap_servers: str = "localhost:19092"
+    bootstrap_servers: str = "127.0.0.1:19092"
     topic: str = "shop.events"
     dlq_topic: str = "shop.events.dlq"
 
@@ -20,7 +20,7 @@ class KafkaSettings(_Base):
 class SchemaRegistrySettings(_Base):
     model_config = SettingsConfigDict(env_prefix="SCHEMA_REGISTRY_")
 
-    url: str = "http://localhost:18081"
+    url: str = "http://127.0.0.1:18081"
 
 
 class ProducerSettings(_Base):

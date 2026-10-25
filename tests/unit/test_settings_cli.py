@@ -15,9 +15,9 @@ def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     ]:
         monkeypatch.delenv(name)
     k = KafkaSettings(_env_file=None)
-    assert k.bootstrap_servers == "localhost:19092"
+    assert k.bootstrap_servers == "127.0.0.1:19092"
     assert (k.topic, k.dlq_topic) == ("shop.events", "shop.events.dlq")
-    assert SchemaRegistrySettings(_env_file=None).url == "http://localhost:18081"
+    assert SchemaRegistrySettings(_env_file=None).url == "http://127.0.0.1:18081"
     p = ProducerSettings(_env_file=None)
     assert (p.sessions, p.users, p.seed, p.span_minutes) == (400, 250, 42, 90)
     assert (p.duplicate_rate, p.late_rate, p.malformed, p.invalid) == (0.02, 0.03, 10, 14)
