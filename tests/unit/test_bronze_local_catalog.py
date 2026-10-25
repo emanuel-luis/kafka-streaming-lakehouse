@@ -270,3 +270,30 @@ def test_schema_race_with_the_other_replica_is_retried(
     loaded = catalog.load_table("bronze.events")
     assert [f.name for f in loaded.schema().fields].count("device_type") == 1
     assert loaded.scan().to_arrow().num_rows == 3
+
+
+def test_fence_reads_the_metadata_of_the_schema_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Why the schema update runs before the fence: a schema commit asserts schema ids, not the
+    snapshot, so it succeeds over another writer's append and returns metadata holding it."""
+    catalog = _catalog(tmp_path)
+    table = ensure_table(catalog, "bronze.events", bronze_schema(load_schema(1)))
+    other = catalog.load_table("bronze.events")
+    real = bronze.evolve_schema
+    calls: list[int] = []
+
+    def racing(t: Any, fields: Any) -> Any:
+        if not calls:  # after this writer refreshed, the other writes the same offsets
+            calls.append(1)
+            append_batch(other, *_v2_batch(0, 5, version=1, run="run-b"), first_offsets={0: 0},
+                         retries=0)  # fmt: skip
+        return real(t, fields)
+
+    monkeypatch.setattr(bronze, "evolve_schema", racing)
+    rows, summary = _v2_batch(0, 5, version=2, run="run-a")
+    with pytest.raises(OffsetFenceError):
+        append_batch(table, rows, summary, first_offsets={0: 0}, retries=0, writer_fields=V2_FIELDS)
+    loaded = catalog.load_table("bronze.events")
+    assert loaded.schema().find_field("device_type") is not None  # the schema commit landed
+    assert loaded.scan().to_arrow()["run_id"].to_pylist() == ["run-b"] * 5

@@ -143,3 +143,23 @@ def test_schema_versions_are_one_or_two(args: list[str]) -> None:
 def test_check_only_names_a_missing_file() -> None:
     result = CliRunner().invoke(app, ["register-schemas", "--check-only", "nope.avsc"])
     assert result.exit_code == 2
+
+
+@pytest.mark.parametrize(
+    ("answer", "code", "text"),
+    [
+        (False, 1, "incompatible: shop_event.v2-breaking.avsc"),
+        (True, 0, "compatible: shop_event.v2-breaking.avsc"),
+        (None, 0, "has no versions yet"),
+    ],
+)
+def test_check_only_reports_the_registry_answer(
+    monkeypatch: pytest.MonkeyPatch, answer: bool | None, code: int, text: str
+) -> None:
+    import lakestream.registry
+
+    monkeypatch.setattr(lakestream.registry, "check_schema", lambda _url, _schema: answer)
+    args = ["register-schemas", "--check-only", "shop_event.v2-breaking.avsc"]
+    result = CliRunner().invoke(app, args)
+    assert result.exit_code == code
+    assert text in result.output

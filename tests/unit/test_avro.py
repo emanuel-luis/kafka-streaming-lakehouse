@@ -101,6 +101,6 @@ def test_is_compatible() -> None:
     schema = load_schema(2)
     assert is_compatible(_Registry(True), schema)  # type: ignore[arg-type]
     assert not is_compatible(_Registry(False), schema)  # type: ignore[arg-type]
-    assert is_compatible(_Registry(404), schema)  # type: ignore[arg-type]  # no version yet
+    assert is_compatible(_Registry(404), schema) is None  # type: ignore[arg-type]  # no version
     with pytest.raises(SchemaRegistryError):
         is_compatible(_Registry(500), schema)  # type: ignore[arg-type]

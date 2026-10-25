@@ -30,17 +30,17 @@ def read_schema(path: str | Path) -> str:
     return packaged.read_text("utf-8")
 
 
-def is_compatible(client: SchemaRegistryClient, schema: str, subject: str = SUBJECT) -> bool:
-    """Ask the compatibility endpoint; a subject with no version yet accepts anything."""
+def is_compatible(client: SchemaRegistryClient, schema: str, subject: str = SUBJECT) -> bool | None:
+    """Ask the compatibility endpoint. None: the subject has no version yet, so anything goes."""
     try:
         return client.test_compatibility(subject, Schema(schema, "AVRO"))
     except SchemaRegistryError as exc:
         if exc.http_status_code == 404:
-            return True
+            return None
         raise
 
 
-def check_schema(url: str, schema: str, subject: str = SUBJECT) -> bool:
+def check_schema(url: str, schema: str, subject: str = SUBJECT) -> bool | None:
     return is_compatible(SchemaRegistryClient({"url": url}), schema, subject)
 
 
@@ -49,7 +49,7 @@ def register_schema(url: str, version: int = 1, subject: str = SUBJECT) -> int:
     client = SchemaRegistryClient({"url": url})
     client.set_compatibility(subject_name=subject, level=COMPATIBILITY)
     schema = load_schema(version)
-    if not is_compatible(client, schema, subject):
+    if is_compatible(client, schema, subject) is False:
         raise IncompatibleSchemaError(
             f"v{version} is not {COMPATIBILITY} compatible with {subject}"
         )

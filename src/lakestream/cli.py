@@ -37,7 +37,11 @@ def register_schemas(
             schema = read_schema(check_only)
         except FileNotFoundError as exc:
             raise typer.BadParameter(str(exc), param_hint="--check-only") from exc
-        if not check_schema(url, schema):
+        compatible = check_schema(url, schema)
+        if compatible is None:
+            typer.echo(f"compatible: {SUBJECT} has no versions yet, nothing to check against")
+            return
+        if not compatible:
             typer.echo(
                 f"incompatible: {check_only} breaks {COMPATIBILITY} compatibility of {SUBJECT}",
                 err=True,
