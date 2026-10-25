@@ -6,7 +6,14 @@ from typing import Any
 
 import pytest
 
-from lakestream.ops.check import Query, gold_time_travel, render, run_checks, time_travel
+from lakestream.ops.check import (
+    Check,
+    Query,
+    gold_time_travel,
+    render,
+    run_checks,
+    time_travel,
+)
 from lakestream.ops.expectations import Expected, build_expected
 from lakestream.settings import TrinoSettings
 
@@ -112,5 +119,12 @@ def test_gold_time_travel() -> None:
 
     check = gold_time_travel(q)
     assert check.ok and check.actual == 10 and "201" in check.name
-    answers["events_per_minute$snapshots"] = [(202,)]  # a single gold run: nothing to compare
+    answers["FOR VERSION AS OF 201"] = [(30,)]  # more events in the past than now
     assert not gold_time_travel(q).ok
+
+    answers["events_per_minute$snapshots"] = [(202,)]  # a single gold run: nothing to compare
+    skip = gold_time_travel(q)
+    assert skip.ok and skip.skipped and "no earlier gold run" in skip.name
+    report = render([skip, Check("x", 1, 1, True)])
+    assert report.splitlines()[0].startswith("skip gold time travel skipped:")
+    assert report.endswith("1/1 checks passed, 1 skipped")

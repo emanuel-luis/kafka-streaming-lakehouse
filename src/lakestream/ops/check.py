@@ -31,6 +31,7 @@ class Check:
     expected: object
     actual: object
     ok: bool
+    skipped: bool = False  # nothing to compare; never fails the run
 
 
 def _eq(name: str, expected: object, actual: object) -> Check:
@@ -144,12 +145,15 @@ def gold_time_travel(q: Query) -> Check:
         'SELECT snapshot_id FROM gold."events_per_minute$snapshots"'
         " WHERE element_at(summary, 'run_id') IS NOT NULL ORDER BY committed_at DESC LIMIT 2"
     )
-    snapshot = int(runs[1][0]) if len(runs) == 2 else None
-    earlier = (
-        q(f"SELECT sum(event_count) FROM gold.events_per_minute FOR VERSION AS OF {snapshot}")[0][0]
-        if snapshot is not None
-        else None
-    )
+    if len(runs) < 2:
+        # Gold ran once after every manifest, or maintenance expired the earlier run's snapshot.
+        # The other gold checks still catch wrong data.
+        reason = f"{len(runs)} gold snapshot(s) with a run_id, no earlier gold run to compare"
+        return Check(f"gold time travel skipped: {reason}", "-", current, ok=True, skipped=True)
+    snapshot = int(runs[1][0])
+    earlier = q(
+        f"SELECT sum(event_count) FROM gold.events_per_minute FOR VERSION AS OF {snapshot}"
+    )[0][0]
     name = f"gold time travel: events at the previous gold run (snapshot {snapshot}) <= current"
     ok = earlier is not None and current is not None and earlier <= current
     return Check(name, f"<= {current}", earlier, ok)
@@ -158,10 +162,14 @@ def gold_time_travel(q: Query) -> Check:
 def render(checks: Sequence[Check]) -> str:
     lines = []
     for c in checks:
-        mark = "ok  " if c.ok else "FAIL"
+        mark = "skip" if c.skipped else "ok  " if c.ok else "FAIL"
         lines.append(f"{mark} {c.name}: expected {c.expected}, actual {c.actual}")
     failed = sum(not c.ok for c in checks)
-    lines.append(f"{len(checks) - failed}/{len(checks)} checks passed")
+    skipped = sum(c.skipped for c in checks)
+    lines.append(
+        f"{len(checks) - failed - skipped}/{len(checks) - skipped} checks passed"
+        + (f", {skipped} skipped" if skipped else "")
+    )
     return "\n".join(lines)
 
 
