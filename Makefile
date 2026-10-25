@@ -9,7 +9,7 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-17s %s\n", $$1, $$2}'
 
 install: ## Install dependencies
-	uv sync --all-extras
+	uv sync --all-extras --locked
 
 lint: ## Ruff check, ruff format check, mypy
 	uv run --all-extras ruff check

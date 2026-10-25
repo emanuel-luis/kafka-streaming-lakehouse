@@ -1,5 +1,7 @@
 # kafka-streaming-lakehouse
 
+[![ci](https://github.com/emanuel-luis/kafka-streaming-lakehouse/actions/workflows/ci.yml/badge.svg)](https://github.com/emanuel-luis/kafka-streaming-lakehouse/actions/workflows/ci.yml)
+
 > Kafka end to end on a laptop: Python producers and consumers with Avro and Schema Registry,
 > landing events in an Apache Iceberg lakehouse (bronze, silver, gold) that Trino queries.
 

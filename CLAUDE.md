@@ -7,7 +7,7 @@ portfolio repo; all data is synthetic.
 
 ## Commands
 
-- `make install`: `uv sync`.
+- `make install`: `uv sync --all-extras --locked`.
 - `make lint`: ruff check, ruff format --check, mypy strict on `src` (same as the CI lint job).
 - `make test-fast`: pytest with the default selection (deselects `spark` and `integration`).
 - `make test-integration`: tests against the running compose stack (`make up` first).
@@ -18,6 +18,9 @@ portfolio repo; all data is synthetic.
 - `make ui`: Kafbat UI on http://localhost:18090 (profile `ui`).
 - `make silver` / `make gold` / `make maintain`: Spark jobs in the `spark-job` container.
 - `make check`: `lakestream check` in the `cli` container (`MANIFESTS="--manifest /runs/run1.json"`).
+- CI (`.github/workflows/ci.yml`): `lint` gates `test-fast`, `test-spark` and `e2e` (`make demo`,
+  `make test-integration`, `make down`); `UV_LOCKED=1`; actions pinned by SHA. `security.yml` runs
+  pip-audit; Dependabot covers actions and uv, not Docker images.
 - `make demo`: `scripts/demo.sh`, the whole run from fresh volumes (a stack run: heavy lock).
 - Spark tests and jobs never run in Windows Python. On the owner's machine:
   `wsl -d Ubuntu -e bash -lc 'cd /mnt/d/dev/Pessoal/kafka-streaming-lakehouse && UV_PROJECT_ENVIRONMENT=$HOME/.venvs/kafka-streaming-lakehouse make test-spark'`.
