@@ -2,7 +2,14 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from lakestream.consumer.batch import BatchBuffer, Rec, first_offsets, resume_offset, with_backoff
+from lakestream.consumer.batch import (
+    BatchBuffer,
+    Rec,
+    catch_up_commits,
+    first_offsets,
+    resume_offset,
+    with_backoff,
+)
 
 
 def rec(partition: int, offset: int) -> Rec:
@@ -89,6 +96,29 @@ def test_resume_examples() -> None:
     assert resume_offset(30, 20) == 30  # committed ahead of the table (DLQ-only batch)
     assert resume_offset(-1001, None) == -1001  # nothing anywhere: auto.offset.reset applies
     assert resume_offset(-1001, 4) == 5
+
+
+def test_catch_up_commits_examples() -> None:
+    committed = {0: 10, 1: 30, 2: -1001, 3: -1001}
+    resume = {0: 21, 1: 30, 2: 5, 3: -1001}
+    # 0: crash between append and commit; 1: already in step; 2: never committed but written;
+    # 3: nothing anywhere, the sentinel must not be committed.
+    assert catch_up_commits(committed, resume) == {0: 21, 2: 5}
+
+
+@given(
+    st.dictionaries(st.integers(0, 5), st.integers(-1001, 10**6)),
+    st.dictionaries(st.integers(0, 5), st.one_of(st.none(), st.integers(0, 10**6))),
+)
+def test_catch_up_never_moves_back(
+    committed: dict[int, int], written: dict[int, int | None]
+) -> None:
+    resume = {p: resume_offset(committed.get(p, -1001), w) for p, w in written.items()}
+    got = catch_up_commits(committed, resume)
+    for p, o in got.items():
+        assert o >= 0
+        assert o > committed.get(p, -1)
+        assert o == resume[p]
 
 
 def test_with_backoff_retries_then_succeeds() -> None:

@@ -1,7 +1,7 @@
 """Pure batching helpers: the record accumulator, resume offsets and bounded retry."""
 
 import time
-from collections.abc import Callable, Collection, Iterable
+from collections.abc import Callable, Collection, Iterable, Mapping
 from dataclasses import dataclass
 
 BACKOFF_SECONDS = (1, 2, 4, 8, 16)
@@ -90,6 +90,16 @@ def resume_offset(committed: int, last_written: int | None) -> int:
     offset, and with nothing written the sentinel is kept so `auto.offset.reset` applies.
     """
     return committed if last_written is None else max(committed, last_written + 1)
+
+
+def catch_up_commits(committed: Mapping[int, int], resume: Mapping[int, int]) -> dict[int, int]:
+    """Partitions whose resume offset (from bronze snapshots) is ahead of the Kafka commit.
+
+    After a crash between the Iceberg append and the Kafka commit, the consumer resumes past rows
+    that are already durable. Committing that resume offset keeps the group's lag truthful even
+    when no new record ever arrives on the partition. Sentinels (negative offsets) never qualify.
+    """
+    return {p: o for p, o in resume.items() if o >= 0 and o > committed.get(p, -1)}
 
 
 def with_backoff[T](

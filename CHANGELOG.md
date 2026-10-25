@@ -21,4 +21,6 @@ All notable changes to this project are documented here. The format follows
 - Bronze appends are fenced against offsets another writer of the group already wrote; the table
   sets `commit.retry.num-retries=0` so every commit conflict reaches the fence.
 - `lakestream lag --wait` treats a partition that never received a message as caught up.
+- After a restart, the consumer commits the resume offset taken from bronze snapshots when it is
+  ahead of the group's Kafka commit, so lag reaches 0 without new records.
 - Tooling: uv, ruff, mypy, pytest, Makefile, `.env.example` and the `app` Docker image.

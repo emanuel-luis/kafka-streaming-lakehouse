@@ -14,7 +14,14 @@ from confluent_kafka.schema_registry.avro import AvroDeserializer
 from pyiceberg.catalog import Catalog
 from pyiceberg.table import Table
 
-from lakestream.consumer.batch import BatchBuffer, Rec, first_offsets, resume_offset, with_backoff
+from lakestream.consumer.batch import (
+    BatchBuffer,
+    Rec,
+    catch_up_commits,
+    first_offsets,
+    resume_offset,
+    with_backoff,
+)
 from lakestream.consumer.bronze import (
     OffsetFenceError,
     append_batch,
@@ -84,14 +91,20 @@ class BronzeConsumer:
         self.stop = False
         self.last_activity = time.monotonic()
         self.assigned = False
+        self.pending_commits: dict[int, int] = {}
 
     # --- rebalance callbacks (run inside poll/consume) ----------------------------------------
 
     def on_assign(self, consumer: Consumer, partitions: list[TopicPartition]) -> None:
         committed = consumer.committed(partitions, timeout=30)
         written = last_written_offsets(self.table, self.cfg.group_id, self.kafka.topic)
+        before = {tp.partition: tp.offset for tp in committed}
         for tp in committed:
             tp.offset = resume_offset(tp.offset, written.get(tp.partition))
+        # Committed from the main loop, not inside this callback.
+        self.pending_commits.update(
+            catch_up_commits(before, {tp.partition: tp.offset for tp in committed})
+        )
         consumer.incremental_assign(committed)
         self.assigned = True
         self.last_activity = time.monotonic()
@@ -102,6 +115,8 @@ class BronzeConsumer:
 
     def on_revoke(self, _consumer: Consumer, partitions: list[TopicPartition]) -> None:
         dropped = self.buffer.drop_partitions({tp.partition for tp in partitions})
+        for tp in partitions:
+            self.pending_commits.pop(tp.partition, None)
         log.info(
             "partitions revoked",
             extra={"partitions": [tp.partition for tp in partitions], "dropped": dropped},
@@ -172,6 +187,9 @@ class BronzeConsumer:
             if self.crash_after is not None and self.writes == self.crash_after:
                 os._exit(1)  # test hook: written to Iceberg, not committed to Kafka
         to_commit = [TopicPartition(self.kafka.topic, p, o + 1) for p, o in sorted(offsets.items())]
+        # A pending catch-up commit is older than this batch: drop it so it never moves back.
+        for p in offsets:
+            self.pending_commits.pop(p, None)
         with_backoff(
             lambda: self.consumer.commit(offsets=to_commit, asynchronous=False),
             retries,
@@ -208,6 +226,22 @@ class BronzeConsumer:
             )
         )
 
+    def _commit_catch_up(self) -> None:
+        """Commit resume offsets that bronze snapshots put ahead of the group's Kafka commit."""
+        if not self.pending_commits:
+            return
+        offsets = [TopicPartition(self.kafka.topic, p, o) for p, o in self.pending_commits.items()]
+        try:
+            self.consumer.commit(offsets=offsets, asynchronous=False)
+        except KafkaException as exc:  # e.g. a rebalance in progress; retried on the next poll
+            log.warning("catch-up commit failed, retrying", extra={"error": str(exc)})
+            return
+        log.info(
+            "committed offsets already written to bronze",
+            extra={"offsets": dict(sorted(self.pending_commits.items()))},
+        )
+        self.pending_commits.clear()
+
     def _beat(self) -> None:
         self.cfg.heartbeat_file.touch()
 
@@ -230,6 +264,7 @@ class BronzeConsumer:
                 msgs = self.consumer.consume(
                     num_messages=min(POLL_MAX_MESSAGES, self.buffer.room()), timeout=1.0
                 )
+                self._commit_catch_up()
                 for msg in msgs:
                     self._add(msg)
                 if msgs:
