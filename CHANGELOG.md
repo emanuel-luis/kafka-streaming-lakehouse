@@ -13,4 +13,8 @@ All notable changes to this project are documented here. The format follows
 - `lakestream produce`: seeded synthetic shop events (Avro, Confluent wire format) with
   duplicates, late, malformed and invalid injections, and a JSON manifest per run.
 - `lakestream register-schemas` and the `ShopEvent` v1 Avro schema.
+- Compose services for phase 2: RustFS object storage with an idempotent bucket init, the Iceberg
+  REST catalog (SQLite in WAL mode on a named volume, S3FileIO), a two-replica `consumer` with a
+  heartbeat healthcheck, and a `cli` service (profile `tools`). `make up` is a plain
+  `up --wait`; new `make lag`.
 - Tooling: uv, ruff, mypy, pytest, Makefile, `.env.example` and the `app` Docker image.
