@@ -27,12 +27,17 @@ QUERIES = (
 
 
 def read_bronze(spark: SparkSession) -> DataFrame:
-    """Bronze as a stream; replace snapshots (compaction) are skipped by the source itself."""
+    """Bronze as a stream; replace snapshots (compaction) are skipped by the source itself.
+
+    The name is catalog-qualified: a bare `ns.table` makes Iceberg try `ns` as a catalog first
+    and log CATALOG_NOT_FOUND before it falls back to the default catalog.
+    """
+    catalog = spark.conf.get("spark.sql.defaultCatalog")
     return (
         spark.readStream.format("iceberg")
         .option("streaming-skip-overwrite-snapshots", "true")
         .option("streaming-skip-delete-snapshots", "true")
-        .load(BRONZE)
+        .load(f"{catalog}.{BRONZE}")
     )
 
 
