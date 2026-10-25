@@ -14,8 +14,9 @@ from confluent_kafka.schema_registry.avro import AvroDeserializer
 from pyiceberg.catalog import Catalog
 from pyiceberg.table import Table
 
-from lakestream.consumer.batch import BatchBuffer, Rec, resume_offset, with_backoff
+from lakestream.consumer.batch import BatchBuffer, Rec, first_offsets, resume_offset, with_backoff
 from lakestream.consumer.bronze import (
+    OffsetFenceError,
     append_batch,
     bronze_schema,
     build_row,
@@ -164,7 +165,9 @@ class BronzeConsumer:
                 records=len(rows),
                 dlq_records=len(bad),
             )
-            append_batch(self.table, rows, summary, retries=retries)
+            append_batch(
+                self.table, rows, summary, first_offsets=first_offsets(recs), retries=retries
+            )
             self.writes += 1
             if self.crash_after is not None and self.writes == self.crash_after:
                 os._exit(1)  # test hook: written to Iceberg, not committed to Kafka
@@ -242,6 +245,12 @@ class BronzeConsumer:
                     log.info("idle, exiting")
                     break
             self.flush_batch()  # a stop request or idle exit finishes the buffered batch
+        except OffsetFenceError:
+            log.exception(
+                "batch fenced by offsets another writer wrote, exiting without committing"
+            )
+            self.consumer.close()
+            return 1
         except Exception:
             log.exception("consumer failed, exiting without committing the open batch")
             self.consumer.close()

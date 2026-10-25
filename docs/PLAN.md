@@ -185,7 +185,10 @@ Every append carries these snapshot summary properties:
    in bronze snapshots, newest first, filtered to this group and topic, skipping non-append
    snapshots. Set `tp.offset` and call `incremental_assign`. Kafka offsets alone cannot make this
    safe because the Kafka commit is a separate step from the Iceberg commit; the snapshot summary
-   commits atomically with the data, so the table itself says what it holds.
+   commits atomically with the data, so the table itself says what it holds. The append also
+   fences stale writers (decision 21): on every attempt, after the refresh, it raises
+   `OffsetFenceError` when the group already wrote an offset at or past the batch's first one, and
+   the consumer exits without committing.
 6. `on_revoke` drops the buffered records of revoked partitions (never written or committed, so
    the new owner reads them again). Appends and commits happen between polls and rebalance
    callbacks run only inside polls, so a batch's append and commit never straddle a rebalance.

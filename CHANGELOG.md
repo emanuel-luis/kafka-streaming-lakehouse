@@ -18,4 +18,5 @@ All notable changes to this project are documented here. The format follows
   heartbeat healthcheck, and a `cli` service (profile `tools`). `make up` is a plain
   `up --wait`; new `make lag`.
 - Consumer polls at most the room left in the batch, so `CONSUMER_BATCH_MAX_MESSAGES` is a hard cap.
+- Bronze appends are fenced against offsets another writer of the group already wrote.
 - Tooling: uv, ruff, mypy, pytest, Makefile, `.env.example` and the `app` Docker image.

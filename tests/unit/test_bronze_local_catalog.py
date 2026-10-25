@@ -7,10 +7,12 @@ The REST catalog of the stack is not needed to exercise table creation, partitio
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from pyiceberg.catalog.sql import SqlCatalog
 
 from lakestream.consumer.batch import Rec
 from lakestream.consumer.bronze import (
+    OffsetFenceError,
     append_batch,
     bronze_schema,
     build_row,
@@ -68,7 +70,8 @@ def test_partitioned_appends_and_offset_bookkeeping(tmp_path: Path) -> None:
             records=len(rows),
             dlq_records=0,
         )
-        append_batch(table, rows, summary, retries=0)
+        first = {0: base, 1: base + 1}
+        append_batch(table, rows, summary, first_offsets=first, retries=0)
 
     scanned = catalog.load_table("bronze.events").scan().to_arrow()
     assert scanned.num_rows == 10
@@ -77,3 +80,47 @@ def test_partitioned_appends_and_offset_bookkeeping(tmp_path: Path) -> None:
     assert last_written_offsets(table, "other-group", TOPIC) == {}
     assert has_batch(table, "run-a", 2)
     assert not has_batch(table, "run-a", 3)
+
+
+def test_offset_fence_on_a_real_table(tmp_path: Path) -> None:
+    table = ensure_table(_catalog(tmp_path), "bronze.events", bronze_schema(load_schema(1)))
+    events = generate(GenParams(sessions=5))[:10]
+    ingested_at = datetime(2026, 1, 1, 12, tzinfo=UTC)
+
+    def append(
+        first: int, last: int, *, batch_id: int, group: str = "g", topic: str = TOPIC
+    ) -> None:
+        rows = [
+            build_row(
+                Rec(topic, 0, o, 1_767_268_800_000, None, b""),
+                1,
+                events[o % 10].as_record(),
+                run_id="run-z",
+                batch_id=batch_id,
+                ingested_at=ingested_at,
+            )
+            for o in range(first, last + 1)
+        ]
+        summary = build_summary(
+            run_id="run-z",
+            batch_id=batch_id,
+            group=group,
+            topic=topic,
+            offsets={0: last},
+            records=len(rows),
+            dlq_records=0,
+        )
+        append_batch(table, rows, summary, first_offsets={0: first}, retries=0)
+
+    def snapshots() -> int:
+        return len(table.refresh().metadata.snapshots)
+
+    append(0, 9, batch_id=1)
+    assert snapshots() == 1
+    with pytest.raises(OffsetFenceError):
+        append(5, 14, batch_id=2)
+    assert snapshots() == 1
+    append(0, 4, batch_id=3, group="other")  # a different group is not fenced
+    append(0, 4, batch_id=4, topic="other.topic")  # nor a different topic
+    append(10, 19, batch_id=5)
+    assert snapshots() == 4

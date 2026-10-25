@@ -193,14 +193,18 @@ def build_summary(
     }
 
 
-def snapshot_summaries(table: Table) -> list[tuple[str, Mapping[str, str]]]:
-    """Newest first. The table is refreshed so commits of other instances are seen."""
-    table = table.refresh()
+def read_summaries(table: Table) -> list[tuple[str, Mapping[str, str]]]:
+    """Newest first, from the metadata the table already holds (no refresh)."""
     out: list[tuple[str, Mapping[str, str]]] = []
     for snap in reversed(table.metadata.snapshots):
         if snap.summary is not None:
             out.append((snap.summary.operation.value, snap.summary.additional_properties))
     return out
+
+
+def snapshot_summaries(table: Table) -> list[tuple[str, Mapping[str, str]]]:
+    """Newest first. The table is refreshed so commits of other instances are seen."""
+    return read_summaries(table.refresh())
 
 
 def walk_last_offsets(summaries: Summaries, group: str, topic: str) -> dict[int, int]:
@@ -241,11 +245,23 @@ def has_batch(table: Table, run_id: str, batch_id: int) -> bool:
 # --- append -----------------------------------------------------------------------------------
 
 
+class OffsetFenceError(Exception):
+    """Another writer of this group already wrote offsets this batch holds (a zombie writer)."""
+
+
+def overlapping_partitions(
+    written: Mapping[int, int], first_offsets: Mapping[int, int]
+) -> dict[int, int]:
+    """Partitions where the table already holds an offset of the batch: written >= first."""
+    return {p: w for p, w in written.items() if p in first_offsets and w >= first_offsets[p]}
+
+
 def append_batch(
     table: Table,
     rows: Sequence[Mapping[str, Any]],
     summary: Mapping[str, str],
     *,
+    first_offsets: Mapping[int, int],
     retries: int,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
@@ -253,6 +269,10 @@ def append_batch(
 
     A lost commit race (CommitFailedException) refreshes and retries at once. After any other
     failure the outcome may be unknown, so the table is searched for this run and batch first.
+
+    Before each append the refreshed table is checked for offsets of this group and topic at or
+    past `first_offsets`; a hit raises OffsetFenceError, never retried. The append asserts the
+    parent snapshot, so the check is atomic with the commit (decision 21).
     """
     run_id, batch_id = summary["ingest.run_id"], int(summary["ingest.batch_id"])
     for attempt in range(retries + 1):
@@ -261,8 +281,22 @@ def append_batch(
                 log.info("append already committed", extra={"batch_id": batch_id})
                 return
             table = table.refresh()
+            written = walk_last_offsets(
+                read_summaries(table), summary["ingest.consumer_group"], summary["ingest.topic"]
+            )
+            clash = overlapping_partitions(written, first_offsets)
+            if clash:
+                raise OffsetFenceError(
+                    f"batch {batch_id} fenced, offsets already written: "
+                    + ", ".join(
+                        f"partition {p} written up to {w}, batch starts at {first_offsets[p]}"
+                        for p, w in sorted(clash.items())
+                    )
+                )
             table.append(to_arrow(table, rows), snapshot_properties=dict(summary))
             return
+        except OffsetFenceError:
+            raise
         except CommitFailedException:
             if attempt == retries:
                 raise
