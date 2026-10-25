@@ -24,11 +24,13 @@ def run_gold(spark: SparkSession, *, run_id: str) -> None:
     # Pin the current snapshot: the three tables come from the same rows even if silver commits
     # meanwhile. An empty table has no `main` ref yet.
     ref = spark.sql("SELECT snapshot_id FROM silver.events.refs WHERE name = 'main'").first()
-    reader = spark.read
+    # Iceberg 1.12 dropped the `snapshot-id` read option; Spark's own time travel replaces it.
     if ref is not None:
-        reader = reader.option("snapshot-id", str(ref["snapshot_id"]))
-        run.details["silver_snapshot_id"] = ref["snapshot_id"]
-    silver = reader.table("silver.events")
+        snapshot_id = int(ref["snapshot_id"])
+        silver = spark.sql(f"SELECT * FROM silver.events VERSION AS OF {snapshot_id}")
+        run.details["silver_snapshot_id"] = snapshot_id
+    else:
+        silver = spark.table("silver.events")
     try:
         run.rows_in = silver.count()
         for table, transform in GOLD:
