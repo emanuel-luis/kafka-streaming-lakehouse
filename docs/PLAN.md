@@ -183,8 +183,10 @@ Every append carries these snapshot summary properties:
 5. Idempotency across a crash between append and commit: in `on_assign`, for each partition,
    `resume = max(committed, last_written + 1)`. `last_written` comes from walking `ingest.offsets`
    in bronze snapshots, newest first, filtered to this group and topic, skipping non-append
-   snapshots. Set `tp.offset` and call `incremental_assign`. Kafka offsets alone cannot make this
-   safe because the Kafka commit is a separate step from the Iceberg commit; the snapshot summary
+   snapshots. Set `tp.offset` and call `incremental_assign`. When the resume point is ahead of the
+   Kafka commit, the main loop commits it once right after the assignment, so the group's lag is
+   truthful even if the partition never receives another record. Kafka offsets alone cannot make
+   this safe because the Kafka commit is a separate step from the Iceberg commit; the snapshot summary
    commits atomically with the data, so the table itself says what it holds. The append also
    fences stale writers (decision 21): on every attempt, after the refresh, it raises
    `OffsetFenceError` when the group already wrote an offset at or past the batch's first one, and

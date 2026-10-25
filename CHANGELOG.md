@@ -29,4 +29,6 @@ All notable changes to this project are documented here. The format follows
   `ops.job_runs`.
 - `spark` image target (Temurin 17 JRE, Iceberg packages baked in) and the `spark-job` compose
   service (profile `tools`); `make silver`, `make gold`, `make maintain`.
+- After a restart, the consumer commits the resume offset taken from bronze snapshots when it is
+  ahead of the group's Kafka commit, so lag reaches 0 without new records.
 - Tooling: uv, ruff, mypy, pytest, Makefile, `.env.example` and the `app` Docker image.
