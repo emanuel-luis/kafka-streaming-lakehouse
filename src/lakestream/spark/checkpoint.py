@@ -73,12 +73,13 @@ def protected_snapshot_ids(checkpoint_dir: Path) -> list[int] | None:
     """Snapshots of the stream's source that expiry must keep: initial and last committed.
 
     None when either is unknown (no checkpoint yet, or a layout these assumptions do not cover):
-    the caller must then not expire the source table at all.
+    the caller must then not expire the source table at all. A negative id is Iceberg's start
+    offset (the query began on an empty table): it pins no snapshot, so it is left out.
     """
     initial, committed = initial_snapshot_id(checkpoint_dir), committed_snapshot_id(checkpoint_dir)
     if initial is None or committed is None:
         return None
-    return [initial, committed]
+    return [s for s in (initial, committed) if s >= 0]
 
 
 def clamp_older_than(requested: datetime, resume_commits: list[datetime | None]) -> datetime | None:

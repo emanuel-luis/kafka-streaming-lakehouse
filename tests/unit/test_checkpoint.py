@@ -95,6 +95,15 @@ def test_real_checkpoint_files(tmp_path: Path) -> None:
     assert protected_snapshot_ids(tmp_path) == [6457336699114277973, 8126126696787250935]
 
 
+def test_start_offset_pins_nothing(tmp_path: Path) -> None:
+    _write(tmp_path, "offsets", 0, REAL_OFFSET_FILE)
+    _write(tmp_path, "commits", 0, "v1\n{}")
+    (tmp_path / "sources" / "0" / "offsets").mkdir(parents=True)
+    start = '{"version":1,"snapshot_id":-1,"position":-1,"scan_all_files":false}'
+    (tmp_path / "sources" / "0" / "offsets" / "0").write_text(start, "utf-8")
+    assert protected_snapshot_ids(tmp_path) == [8126126696787250935]
+
+
 def test_protected_snapshots_need_a_committed_batch(tmp_path: Path) -> None:
     (tmp_path / "sources" / "0" / "offsets").mkdir(parents=True)
     (tmp_path / "sources" / "0" / "offsets" / "0").write_text(REAL_INITIAL_OFFSET, "utf-8")
