@@ -13,6 +13,7 @@ Format assumptions (Spark 4.1, Iceberg 1.12), checked by the unit tests:
 """
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 OFFSET_LOG_VERSION = "v1"
@@ -49,3 +50,15 @@ def committed_snapshot_id(checkpoint_dir: Path) -> int | None:
     if not offsets.is_file():
         return None
     return parse_offset_file(offsets.read_text(encoding="utf-8"))
+
+
+def clamp_older_than(requested: datetime, resume_commits: list[datetime | None]) -> datetime | None:
+    """The bronze expiry cutoff, or None when bronze must not be expired.
+
+    `resume_commits` holds the commit time of the snapshot each silver query resumes from (None
+    when unknown). Expiry removes snapshots strictly older than the cutoff, so a cutoff at a
+    resume snapshot's commit time keeps that snapshot and everything after it.
+    """
+    if not resume_commits or any(c is None for c in resume_commits):
+        return None
+    return min([requested, *(c for c in resume_commits if c is not None)])

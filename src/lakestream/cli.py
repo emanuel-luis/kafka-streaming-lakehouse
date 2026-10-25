@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
 import typer
 
@@ -159,3 +159,94 @@ def lag(
     )
     if code:
         raise typer.Exit(code)
+
+
+def _spark_session(app_name: str) -> tuple[str, Any]:
+    """Run id (logging configured) and a SparkSession for one job."""
+    from lakestream.logging import configure_logging
+    from lakestream.runmeta import get_run_id
+    from lakestream.settings import IcebergSettings, S3Settings, SparkSettings
+    from lakestream.spark.session import build_session
+
+    run_id = get_run_id()
+    configure_logging(run_id)
+    return run_id, build_session(SparkSettings(), IcebergSettings(), S3Settings(), app_name)
+
+
+@app.command()
+def silver(
+    trigger: Annotated[
+        str,
+        typer.Option(help="available-now (drain and exit) or processing-time (run until stopped)."),
+    ] = "available-now",
+    interval: Annotated[
+        str, typer.Option(help="Micro-batch interval with --trigger processing-time.")
+    ] = "30 seconds",
+) -> None:
+    """Stream bronze into silver.events and silver.rejects (Spark)."""
+    if trigger not in ("available-now", "processing-time"):
+        raise typer.BadParameter("must be available-now or processing-time", param_hint="--trigger")
+    from lakestream.settings import SparkSettings
+    from lakestream.spark.silver_job import run_silver
+
+    run_id, spark = _spark_session("lakestream-silver")
+    try:
+        run_silver(
+            spark,
+            run_id=run_id,
+            checkpoint_root=SparkSettings().checkpoint_root,
+            trigger=trigger,
+            interval=interval,
+        )
+    finally:
+        spark.stop()
+
+
+@app.command()
+def gold() -> None:
+    """Recompute every gold table from silver.events (Spark batch)."""
+    from lakestream.spark.gold_job import run_gold
+
+    run_id, spark = _spark_session("lakestream-gold")
+    try:
+        run_gold(spark, run_id=run_id)
+    finally:
+        spark.stop()
+
+
+@app.command()
+def maintain(
+    older_than_minutes: Annotated[
+        int, typer.Option(min=0, help="Expire snapshots older than this [60].")
+    ] = 60,
+    retain_last: Annotated[int, typer.Option(min=1, help="Snapshots always kept [10].")] = 10,
+    table: Annotated[
+        list[str] | None, typer.Option(help="Table to maintain, repeatable [all].")
+    ] = None,
+) -> None:
+    """Compact, rewrite manifests and expire snapshots; bronze expiry waits for silver."""
+    from lakestream.settings import IcebergSettings, SparkSettings
+    from lakestream.spark.maintain import ALL_TABLES, run_maintain
+
+    unknown = sorted(set(table or []) - set(ALL_TABLES))
+    if unknown:
+        raise typer.BadParameter(f"unknown table(s) {unknown}; known: {ALL_TABLES}")
+    _, spark = _spark_session("lakestream-maintain")
+    try:
+        run_maintain(
+            spark,
+            catalog=IcebergSettings().catalog,
+            checkpoint_root=SparkSettings().checkpoint_root,
+            older_than_minutes=older_than_minutes,
+            retain_last=retain_last,
+            tables=list(table or []),
+        )
+    finally:
+        spark.stop()
+
+
+@app.command("spark-warmup")
+def spark_warmup() -> None:
+    """Start and stop a session so Ivy resolves the Iceberg packages (image build time)."""
+    _, spark = _spark_session("lakestream-warmup")
+    spark.stop()

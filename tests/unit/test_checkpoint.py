@@ -1,8 +1,9 @@
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
-from lakestream.spark.checkpoint import committed_snapshot_id, parse_offset_file
+from lakestream.spark.checkpoint import clamp_older_than, committed_snapshot_id, parse_offset_file
 
 # The shape Spark 4.1 writes with an Iceberg 1.12 source (one source per query).
 OFFSET_FILE = (
@@ -62,3 +63,13 @@ def test_committed_snapshot_without_a_commit(tmp_path: Path) -> None:
     assert committed_snapshot_id(tmp_path) is None  # batch 0 planned, not committed
     _write(tmp_path, "commits", 1, "v1\n{}")
     assert committed_snapshot_id(tmp_path) is None  # offsets/1 already purged or missing
+
+
+def test_clamp_older_than() -> None:
+    t = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    early, late = t - timedelta(hours=1), t + timedelta(hours=1)
+    assert clamp_older_than(t, [late, late]) == t  # silver is past the cutoff
+    assert clamp_older_than(t, [late, early]) == early  # the slowest query wins
+    assert clamp_older_than(t, [early]) == early
+    assert clamp_older_than(t, [late, None]) is None  # unknown position: no expiry
+    assert clamp_older_than(t, []) is None
