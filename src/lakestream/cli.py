@@ -195,6 +195,19 @@ def lag(
 
 
 @app.command()
+def dlq(
+    limit: Annotated[int, typer.Option(min=1, help="Records to show, oldest first [10].")] = 10,
+) -> None:
+    """Show dead letters: headers and a hex preview of the value. Commits nothing."""
+    from lakestream.ops.dlq_show import run_dlq
+    from lakestream.settings import KafkaSettings
+
+    code = run_dlq(KafkaSettings(), limit)
+    if code:
+        raise typer.Exit(code)
+
+
+@app.command()
 def check(
     manifest: Annotated[
         list[Path],

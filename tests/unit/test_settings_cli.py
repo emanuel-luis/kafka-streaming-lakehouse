@@ -71,6 +71,7 @@ def test_run_id(monkeypatch: pytest.MonkeyPatch) -> None:
         ["register-schemas"],
         ["consume"],
         ["lag"],
+        ["dlq"],
         ["silver"],
         ["gold"],
         ["maintain"],

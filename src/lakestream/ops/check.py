@@ -1,8 +1,8 @@
 """End-to-end check: every layer through Trino, the DLQ from Kafka, against the manifests."""
 
 import json
+import sys
 import time
-import uuid
 from collections import Counter
 from collections.abc import Callable, Sequence
 from contextlib import closing
@@ -13,9 +13,10 @@ from typing import Any
 
 import trino.dbapi
 import trino.exceptions
-from confluent_kafka import Consumer, KafkaException, TopicPartition
+from confluent_kafka import KafkaException
 
 from lakestream.contracts import UUID_RE
+from lakestream.ops.dlq_show import read_dlq
 from lakestream.ops.expectations import Expected, build_expected
 from lakestream.settings import KafkaSettings, TrinoSettings
 
@@ -47,50 +48,17 @@ def _set_check(name: str, expected: set[Any], actual: list[Any]) -> Check:
 
 def dlq_coordinates(kafka: KafkaSettings, timeout: float = 30) -> set[tuple[int, int]]:
     """Distinct original (partition, offset) of the DLQ records for the source topic."""
-    consumer = Consumer(
-        {
-            "bootstrap.servers": kafka.bootstrap_servers,
-            "group.id": f"check-{uuid.uuid4().hex}",
-            "enable.auto.commit": False,
-        }
-    )
-    try:
-        meta = consumer.list_topics(kafka.dlq_topic, timeout=timeout).topics[kafka.dlq_topic]
-        if meta.error is not None:
-            raise KafkaException(meta.error)
-        ends: dict[int, int] = {}
-        starts = []
-        for p in meta.partitions:
-            low, high = consumer.get_watermark_offsets(
-                TopicPartition(kafka.dlq_topic, p), timeout=timeout
-            )
-            if high > low:
-                ends[p] = high
-                starts.append(TopicPartition(kafka.dlq_topic, p, low))
-        consumer.assign(starts)
-        found: set[tuple[int, int]] = set()
-        deadline = time.monotonic() + timeout
-        while ends and time.monotonic() < deadline:
-            msg = consumer.poll(1.0)
-            if msg is None or msg.error():
-                continue
-            raw = msg.headers() or []
-            pairs = raw.items() if isinstance(raw, dict) else raw
-            headers = {k: v.decode() if isinstance(v, bytes) else v for k, v in pairs}
-            if headers.get("dlq.original.topic") == kafka.topic:
-                found.add(
-                    (
-                        int(headers["dlq.original.partition"] or -1),
-                        int(headers["dlq.original.offset"] or -1),
-                    )
+    found: set[tuple[int, int]] = set()
+    for rec in read_dlq(kafka, limit=sys.maxsize, timeout=timeout):
+        headers = {k: (v or b"").decode() for k, v in rec.headers}
+        if headers.get("dlq.original.topic") == kafka.topic:
+            found.add(
+                (
+                    int(headers.get("dlq.original.partition") or -1),
+                    int(headers.get("dlq.original.offset") or -1),
                 )
-            if (msg.offset() or 0) + 1 >= ends.get(msg.partition() or 0, 0):
-                ends.pop(msg.partition() or 0, None)
-        if ends:
-            raise KafkaException(f"DLQ not read to the end within {timeout}s: {ends}")
-        return found
-    finally:
-        consumer.close()
+            )
+    return found
 
 
 def first_append_snapshot(q: Query) -> int | None:
