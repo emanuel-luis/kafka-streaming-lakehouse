@@ -41,7 +41,15 @@ from lakestream.consumer.batch import BACKOFF_SECONDS, Rec
 
 log = logging.getLogger("lakestream.bronze")
 
-TABLE_PROPERTIES = {"format-version": "2", "write.parquet.compression-codec": "zstd"}
+# PyIceberg retries a 409 inside the transaction by rebuilding the snapshot on the new head, which
+# drops the parent assertion. With 0 retries every conflict surfaces to `append_batch`, which
+# refreshes and runs the offset fence again (decision 21).
+FENCE_PROPERTY = "commit.retry.num-retries"
+TABLE_PROPERTIES = {
+    "format-version": "2",
+    "write.parquet.compression-codec": "zstd",
+    FENCE_PROPERTY: "0",
+}
 
 # (operation, additional summary properties), newest snapshot first.
 Summaries = Iterable[tuple[str, Mapping[str, str]]]
@@ -117,7 +125,7 @@ def ensure_table(catalog: Catalog, identifier: str, schema: Schema) -> Table:
     """Create the namespace and table when missing; two consumers may start at the same time."""
     catalog.create_namespace_if_not_exists(Catalog.namespace_from(identifier))
     try:
-        return catalog.load_table(identifier)
+        return _with_fence_property(catalog, catalog.load_table(identifier))
     except NoSuchTableError:
         pass
     spec = PartitionSpec(
@@ -133,7 +141,22 @@ def ensure_table(catalog: Catalog, identifier: str, schema: Schema) -> Table:
             identifier, schema, partition_spec=spec, properties=TABLE_PROPERTIES
         )
     except TableAlreadyExistsError:
-        return catalog.load_table(identifier)
+        return _with_fence_property(catalog, catalog.load_table(identifier))
+
+
+def _with_fence_property(catalog: Catalog, table: Table) -> Table:
+    """Set the fence property on a table created without it; two consumers may race to do so."""
+    if table.properties.get(FENCE_PROPERTY) == TABLE_PROPERTIES[FENCE_PROPERTY]:
+        return table
+    try:
+        with table.transaction() as tx:
+            tx.set_properties({FENCE_PROPERTY: TABLE_PROPERTIES[FENCE_PROPERTY]})
+    except CommitFailedException:  # no retry with this very property unset: reload and check
+        table = catalog.load_table(table.name())
+        if table.properties.get(FENCE_PROPERTY) != TABLE_PROPERTIES[FENCE_PROPERTY]:
+            raise
+        return table
+    return catalog.load_table(table.name())
 
 
 # --- rows -------------------------------------------------------------------------------------
@@ -193,14 +216,18 @@ def build_summary(
     }
 
 
-def snapshot_summaries(table: Table) -> list[tuple[str, Mapping[str, str]]]:
-    """Newest first. The table is refreshed so commits of other instances are seen."""
-    table = table.refresh()
+def read_summaries(table: Table) -> list[tuple[str, Mapping[str, str]]]:
+    """Newest first, from the metadata the table already holds (no refresh)."""
     out: list[tuple[str, Mapping[str, str]]] = []
     for snap in reversed(table.metadata.snapshots):
         if snap.summary is not None:
             out.append((snap.summary.operation.value, snap.summary.additional_properties))
     return out
+
+
+def snapshot_summaries(table: Table) -> list[tuple[str, Mapping[str, str]]]:
+    """Newest first. The table is refreshed so commits of other instances are seen."""
+    return read_summaries(table.refresh())
 
 
 def walk_last_offsets(summaries: Summaries, group: str, topic: str) -> dict[int, int]:
@@ -241,11 +268,23 @@ def has_batch(table: Table, run_id: str, batch_id: int) -> bool:
 # --- append -----------------------------------------------------------------------------------
 
 
+class OffsetFenceError(Exception):
+    """Another writer of this group already wrote offsets this batch holds (a zombie writer)."""
+
+
+def overlapping_partitions(
+    written: Mapping[int, int], first_offsets: Mapping[int, int]
+) -> dict[int, int]:
+    """Partitions where the table already holds an offset of the batch: written >= first."""
+    return {p: w for p, w in written.items() if p in first_offsets and w >= first_offsets[p]}
+
+
 def append_batch(
     table: Table,
     rows: Sequence[Mapping[str, Any]],
     summary: Mapping[str, str],
     *,
+    first_offsets: Mapping[int, int],
     retries: int,
     sleep: Callable[[float], None] = time.sleep,
 ) -> None:
@@ -253,6 +292,10 @@ def append_batch(
 
     A lost commit race (CommitFailedException) refreshes and retries at once. After any other
     failure the outcome may be unknown, so the table is searched for this run and batch first.
+
+    Before each append the refreshed table is checked for offsets of this group and topic at or
+    past `first_offsets`; a hit raises OffsetFenceError, never retried. The append asserts the
+    parent snapshot, so the check is atomic with the commit (decision 21).
     """
     run_id, batch_id = summary["ingest.run_id"], int(summary["ingest.batch_id"])
     for attempt in range(retries + 1):
@@ -261,12 +304,26 @@ def append_batch(
                 log.info("append already committed", extra={"batch_id": batch_id})
                 return
             table = table.refresh()
+            written = walk_last_offsets(
+                read_summaries(table), summary["ingest.consumer_group"], summary["ingest.topic"]
+            )
+            clash = overlapping_partitions(written, first_offsets)
+            if clash:
+                raise OffsetFenceError(
+                    f"batch {batch_id} fenced, offsets already written: "
+                    + ", ".join(
+                        f"partition {p} written up to {w}, batch starts at {first_offsets[p]}"
+                        for p, w in sorted(clash.items())
+                    )
+                )
             table.append(to_arrow(table, rows), snapshot_properties=dict(summary))
             return
+        except OffsetFenceError:
+            raise
         except CommitFailedException:
             if attempt == retries:
                 raise
-            log.warning("commit conflict, retrying", extra={"batch_id": batch_id})
+            log.warning("commit conflict, retrying", extra={"batch_id": batch_id})  # no sleep
         except Exception as exc:
             if attempt == retries:
                 raise

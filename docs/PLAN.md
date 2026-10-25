@@ -168,7 +168,8 @@ Every append carries these snapshot summary properties:
    `group.protocol=classic` (KIP-848 is a possible follow-up).
 2. Loop: `consume(num_messages, timeout)` accumulates records until
    `CONSUMER_BATCH_MAX_MESSAGES` (2000) or `CONSUMER_BATCH_MAX_SECONDS` (5). The consumer touches
-   its heartbeat file on every iteration.
+   its heartbeat file on every iteration. Each poll asks for at most the room left in the batch,
+   so `CONSUMER_BATCH_MAX_MESSAGES` is a hard cap, not a soft limit.
 3. Decode: parse the 5-byte header (magic byte 0 plus schema id) before deserializing. A frame
    that is not Avro, a schema id the registry answers 404 for, a fastavro decode error or a null
    value goes to the DLQ. A registry connection error or 5xx is transient and triggers a batch
@@ -184,7 +185,12 @@ Every append carries these snapshot summary properties:
    in bronze snapshots, newest first, filtered to this group and topic, skipping non-append
    snapshots. Set `tp.offset` and call `incremental_assign`. Kafka offsets alone cannot make this
    safe because the Kafka commit is a separate step from the Iceberg commit; the snapshot summary
-   commits atomically with the data, so the table itself says what it holds.
+   commits atomically with the data, so the table itself says what it holds. The append also
+   fences stale writers (decision 21): on every attempt, after the refresh, it raises
+   `OffsetFenceError` when the group already wrote an offset at or past the batch's first one, and
+   the consumer exits without committing. This holds because bronze sets
+   `commit.retry.num-retries=0` (`ensure_table` also sets it on an existing table), so every 409
+   reaches the consumer's own refresh-and-check loop instead of PyIceberg's internal retry.
 6. `on_revoke` drops the buffered records of revoked partitions (never written or committed, so
    the new owner reads them again). Appends and commits happen between polls and rebalance
    callbacks run only inside polls, so a batch's append and commit never straddle a rebalance.
@@ -286,7 +292,7 @@ Send order is by event time, then the injections, applied to disjoint records:
 | Injection | Default | Effect |
 | --- | --- | --- |
 | duplicates | `--duplicate-rate 0.02` | a valid event re-sent with identical bytes, a few records later |
-| late | `--late-rate 0.03`, `--late-max-seconds 180` | the event's send position moves later; its event time is unchanged |
+| late | `--late-rate 0.03`, `--late-max-seconds 180` | the event's send position moves after the same user's next event, so it is overtaken in its partition; its event time is unchanged. The rate is a target: only events with a same-user successor within the delay qualify, and two neighbouring events of one user are never both late, so the manifest's `late` count is the real number |
 | malformed | `--malformed 10` | alternates `bad_magic` (not Avro-framed) and `truncated` (real header, cut body) |
 | invalid | `--invalid 14` | Avro-valid extra records, cycling through the 7 reasons |
 
@@ -327,12 +333,12 @@ service-name endpoints.
 
 | Variable | Default (host) | In compose |
 | --- | --- | --- |
-| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:19092` | `kafka:29092` |
+| `KAFKA_BOOTSTRAP_SERVERS` | `127.0.0.1:19092` | `kafka:29092` |
 | `KAFKA_TOPIC`, `KAFKA_DLQ_TOPIC` | `shop.events`, `shop.events.dlq` | same |
-| `SCHEMA_REGISTRY_URL` | `http://localhost:18081` | `http://schema-registry:8081` |
-| `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION`, `S3_BUCKET` | `http://localhost:19000`, `lake_admin`, `lake_secret_pw`, `us-east-1`, `lakehouse` | `http://s3:9000` |
-| `ICEBERG_REST_URI`, `ICEBERG_WAREHOUSE`, `ICEBERG_CATALOG` | `http://localhost:18181`, `s3://lakehouse/warehouse`, `lake` | `http://iceberg-rest:8181` |
-| `TRINO_HOST`, `TRINO_PORT`, `TRINO_USER`, `TRINO_CATALOG` | `localhost`, `18080`, `lakestream`, `lake` | `trino`, `8080` |
+| `SCHEMA_REGISTRY_URL` | `http://127.0.0.1:18081` | `http://schema-registry:8081` |
+| `S3_ENDPOINT`, `S3_ACCESS_KEY`, `S3_SECRET_KEY`, `S3_REGION`, `S3_BUCKET` | `http://127.0.0.1:19000`, `lake_admin`, `lake_secret_pw`, `us-east-1`, `lakehouse` | `http://s3:9000` |
+| `ICEBERG_REST_URI`, `ICEBERG_WAREHOUSE`, `ICEBERG_CATALOG` | `http://127.0.0.1:18181`, `s3://lakehouse/warehouse`, `lake` | `http://iceberg-rest:8181` |
+| `TRINO_HOST`, `TRINO_PORT`, `TRINO_USER`, `TRINO_CATALOG` | `127.0.0.1`, `18080`, `lakestream`, `lake` | `trino`, `8080` |
 | `CONSUMER_GROUP_ID`, `CONSUMER_BATCH_MAX_MESSAGES`, `CONSUMER_BATCH_MAX_SECONDS`, `CONSUMER_WRITE_RETRIES`, `CONSUMER_BRONZE_TABLE`, `CONSUMER_HEARTBEAT_FILE` | `bronze-ingest`, `2000`, `5`, `5`, `bronze.events`, `/tmp/consumer-heartbeat` | same |
 | `PRODUCER_*` | the defaults of every `produce` option | same |
 | `SPARK_MASTER`, `SPARK_DRIVER_MEMORY`, `SPARK_IVY_DIR`, `SPARK_CHECKPOINT_ROOT` | `local[2]`, `1g`, unset, `/checkpoints` | `/opt/spark-ivy` |
@@ -370,7 +376,7 @@ Trino `lake.properties`: `connector.name=iceberg`, `iceberg.catalog.type=rest`,
 | spark-job | spark | tools | 2g | disabled | iceberg-rest |
 | kafka-ui | kafbat (cluster plus schema registry) | ui | 512m | | kafka |
 
-- Kafka listeners: INTERNAL `kafka:29092`, EXTERNAL advertised as `localhost:${KAFKA_PORT}`,
+- Kafka listeners: INTERNAL `kafka:29092`, EXTERNAL advertised as `127.0.0.1:${KAFKA_PORT}`,
   CONTROLLER. Host tools and integration tests use the EXTERNAL listener.
 - Volumes: `kafka_data`, `s3_data`, `catalog_data`, `spark_checkpoints`, `demo_runs` (at `/runs`).
 - Memory with everything long-running up is about 4.7 GB; a Spark job adds 2 GB (about 6.7 GB).

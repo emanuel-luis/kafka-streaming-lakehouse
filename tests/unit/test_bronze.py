@@ -19,12 +19,14 @@ from pyiceberg.types import (
 
 from lakestream.consumer.batch import Rec
 from lakestream.consumer.bronze import (
+    OffsetFenceError,
     append_batch,
     avro_to_iceberg,
     bronze_schema,
     build_row,
     build_summary,
     find_batch,
+    overlapping_partitions,
     walk_last_offsets,
 )
 from lakestream.registry import load_schema
@@ -218,14 +220,14 @@ def _summary() -> dict[str, str]:
 def test_append_retries_a_commit_conflict_without_sleeping() -> None:
     table = FakeTable([CommitFailedException("stale")])
     sleeps: list[float] = []
-    append_batch(table, _rows(3), _summary(), retries=5, sleep=sleeps.append)  # type: ignore[arg-type]
+    append_batch(table, _rows(3), _summary(), first_offsets={0: 0}, retries=5, sleep=sleeps.append)  # type: ignore[arg-type]
     assert table.appended == [3] and sleeps == []
 
 
 def test_append_with_unknown_outcome_does_not_write_twice() -> None:
     table = FakeTable([ConnectionError("lost response")], commit_before_failing=True)
     sleeps: list[float] = []
-    append_batch(table, _rows(3), _summary(), retries=5, sleep=sleeps.append)  # type: ignore[arg-type]
+    append_batch(table, _rows(3), _summary(), first_offsets={0: 0}, retries=5, sleep=sleeps.append)  # type: ignore[arg-type]
     assert table.appended == [3] and sleeps == [1]
 
 
@@ -233,8 +235,37 @@ def test_append_backs_off_then_gives_up() -> None:
     table = FakeTable([ConnectionError("down")] * 10)
     sleeps: list[float] = []
     with pytest.raises(ConnectionError):
-        append_batch(table, _rows(1), _summary(), retries=5, sleep=sleeps.append)  # type: ignore[arg-type]
+        append_batch(
+            table, _rows(1), _summary(), first_offsets={0: 0}, retries=5, sleep=sleeps.append
+        )  # type: ignore[arg-type]
     assert sleeps == [1, 2, 4, 8, 16] and table.appended == []
+
+
+_OFFSETS = st.dictionaries(st.integers(0, 5), st.integers(0, 100), max_size=6)
+
+
+@given(written=_OFFSETS, first=_OFFSETS)
+def test_overlapping_partitions(written: dict[int, int], first: dict[int, int]) -> None:
+    got = overlapping_partitions(written, first)
+    for p, w in written.items():
+        assert (p in got) == (p in first and w >= first[p])
+        assert got.get(p, w) == w
+
+
+def test_append_fenced_by_a_zombie_write_is_never_retried() -> None:
+    table = FakeTable([])
+    append_batch(table, _rows(3), _summary(), first_offsets={0: 0}, retries=5)  # type: ignore[arg-type]
+    sleeps: list[float] = []
+    with pytest.raises(OffsetFenceError, match="partition 0 written up to 2, batch starts at 2"):
+        append_batch(
+            table,  # type: ignore[arg-type]
+            _rows(3),
+            _summary(),
+            first_offsets={0: 2},
+            retries=5,
+            sleep=sleeps.append,
+        )
+    assert table.appended == [3] and sleeps == []
 
 
 def test_summary_offsets_are_json() -> None:

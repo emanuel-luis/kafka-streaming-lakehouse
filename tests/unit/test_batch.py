@@ -2,7 +2,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from lakestream.consumer.batch import BatchBuffer, Rec, resume_offset, with_backoff
+from lakestream.consumer.batch import BatchBuffer, Rec, first_offsets, resume_offset, with_backoff
 
 
 def rec(partition: int, offset: int) -> Rec:
@@ -35,6 +35,16 @@ def test_due_by_time_from_first_record() -> None:
     assert not buf.due()
     clock.now = 15
     assert buf.due()
+
+
+def test_room() -> None:
+    buf = BatchBuffer(3, 5, Clock())
+    assert buf.room() == 3
+    buf.add(rec(0, 0))
+    assert buf.room() == 2
+    buf.add(rec(0, 1))
+    buf.add(rec(0, 2))
+    assert buf.room() == 1  # full: still at least 1
 
 
 def test_take_resets() -> None:
@@ -104,3 +114,8 @@ def test_with_backoff_gives_up() -> None:
     with pytest.raises(RuntimeError):
         with_backoff(always, 5, sleep=sleeps.append)
     assert sleeps == [1, 2, 4, 8, 16]
+
+
+def test_first_offsets() -> None:
+    assert first_offsets([rec(0, 5), rec(1, 3), rec(0, 4), rec(0, 9)]) == {0: 4, 1: 3}
+    assert first_offsets([]) == {}

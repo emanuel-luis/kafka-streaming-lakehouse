@@ -48,7 +48,7 @@ ui: ## Start Kafka UI (http://localhost:18090)
 
 ARGS ?= --manifest /runs/run1.json
 produce: ## Run the producer (override options with ARGS="...")
-	docker compose run --rm producer produce $(ARGS)
+	docker compose run --rm --build producer produce $(ARGS)
 
 lag: ## Wait until the consumer group has caught up with the topic
-	docker compose run --rm cli lag --wait
+	docker compose run --rm --build cli lag --wait

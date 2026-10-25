@@ -1,7 +1,7 @@
 """Pure batching helpers: the record accumulator, resume offsets and bounded retry."""
 
 import time
-from collections.abc import Callable, Collection
+from collections.abc import Callable, Collection, Iterable
 from dataclasses import dataclass
 
 BACKOFF_SECONDS = (1, 2, 4, 8, 16)
@@ -42,6 +42,10 @@ class BatchBuffer:
             self._started = self._clock()
         self._recs.append(rec)
 
+    def room(self) -> int:
+        """How many more records fit before the batch is full; at least 1 so a poll never stalls."""
+        return max(1, self.max_messages - len(self._recs))
+
     def due(self) -> bool:
         if not self._recs or self._started is None:
             return False
@@ -69,6 +73,14 @@ class BatchBuffer:
     def take(self) -> list[Rec]:
         recs, self._recs, self._started = self._recs, [], None
         return recs
+
+
+def first_offsets(recs: Iterable[Rec]) -> dict[int, int]:
+    """Inclusive first (minimum) offset per partition."""
+    out: dict[int, int] = {}
+    for r in recs:
+        out[r.partition] = min(out.get(r.partition, r.offset), r.offset)
+    return out
 
 
 def resume_offset(committed: int, last_written: int | None) -> int:

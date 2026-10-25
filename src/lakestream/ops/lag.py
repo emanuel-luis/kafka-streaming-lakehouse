@@ -35,8 +35,8 @@ def compute_lag(
 
 
 def caught_up(rows: Sequence[PartitionLag]) -> bool:
-    """Total lag is 0 and every partition has a committed offset."""
-    return bool(rows) and all(r.lag == 0 and r.committed is not None for r in rows)
+    """Total lag is 0 and every partition has a committed offset, unless it is empty (end 0)."""
+    return bool(rows) and all(r.lag == 0 and (r.committed is not None or r.end == 0) for r in rows)
 
 
 def _committed(admin: AdminClient, group: str, topic: str) -> dict[int, int]:

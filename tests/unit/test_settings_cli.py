@@ -24,15 +24,15 @@ def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     ]:
         monkeypatch.delenv(name)
     k = KafkaSettings(_env_file=None)
-    assert k.bootstrap_servers == "localhost:19092"
+    assert k.bootstrap_servers == "127.0.0.1:19092"
     assert (k.topic, k.dlq_topic) == ("shop.events", "shop.events.dlq")
-    assert SchemaRegistrySettings(_env_file=None).url == "http://localhost:18081"
+    assert SchemaRegistrySettings(_env_file=None).url == "http://127.0.0.1:18081"
     p = ProducerSettings(_env_file=None)
     assert (p.sessions, p.users, p.seed, p.span_minutes) == (400, 250, 42, 90)
     assert (p.duplicate_rate, p.late_rate, p.malformed, p.invalid) == (0.02, 0.03, 10, 14)
     s3 = S3Settings(_env_file=None)
     assert (s3.endpoint, s3.region, s3.bucket) == (
-        "http://localhost:19000",
+        "http://127.0.0.1:19000",
         "us-east-1",
         "lakehouse",
     )
@@ -40,7 +40,7 @@ def test_settings_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "lake_secret_pw" not in repr(s3)
     ice = IcebergSettings(_env_file=None)
     assert (ice.rest_uri, ice.warehouse, ice.catalog) == (
-        "http://localhost:18181",
+        "http://127.0.0.1:18181",
         "s3://lakehouse/warehouse",
         "lake",
     )

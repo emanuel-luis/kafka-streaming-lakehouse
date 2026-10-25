@@ -37,7 +37,7 @@ def produce(
     ] = None,
     rate: Annotated[float | None, typer.Option(help="Records per second, 0 = unpaced [0].")] = None,
     duplicate_rate: Annotated[float | None, typer.Option(help="Duplicate share [0.02].")] = None,
-    late_rate: Annotated[float | None, typer.Option(help="Late share [0.03].")] = None,
+    late_rate: Annotated[float | None, typer.Option(help="Target late share [0.03].")] = None,
     late_max_seconds: Annotated[
         int | None, typer.Option(help="Max send delay of a late event [180].")
     ] = None,

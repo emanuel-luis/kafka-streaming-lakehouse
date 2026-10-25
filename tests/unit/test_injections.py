@@ -14,6 +14,7 @@ from lakestream.producer.generator import (
     truncate_frame,
 )
 from lakestream.producer.manifest import build_manifest
+from lakestream.producer.model import Event
 from lakestream.runmeta import utc_now
 
 gens = st.builds(
@@ -97,3 +98,52 @@ def test_malformed_frames() -> None:
     cut = truncate_frame(frame)
     assert cut[:5] == frame[:5]
     assert 5 < len(cut) < len(frame)
+
+
+def _send_ms(plan_item_event: Event) -> int:
+    return int(plan_item_event.event_time.timestamp() * 1000)
+
+
+@given(gens, injs)
+def test_late_events_are_overtaken_within_bound(p: GenParams, inj: InjectParams) -> None:
+    events = generate(p)
+    plan = plan_sends(events, p, inj)
+    sent = [i.event for i in plan.items if i.kind in ("clean", "late")]
+    pos = {e.event_id: n for n, e in enumerate(sent)}
+    late = set(plan.late_ids)
+    assert len(late) == len(plan.late_ids)
+    assert not late & set(plan.duplicate_ids)
+    if inj.late_max_seconds == 0:
+        assert not late
+    for e in events:
+        if e.event_id not in late:
+            continue
+        assert any(
+            o.user_id == e.user_id
+            and o.event_time > e.event_time
+            and pos[o.event_id] < pos[e.event_id]
+            for o in events
+        )
+
+
+@given(gens, injs)
+def test_late_delay_at_most_max(p: GenParams, inj: InjectParams) -> None:
+    # re-derive send times: a late event i is sent at t_j + extra, so it sorts after j and the
+    # delay bound shows up as: no event of another user sent before t_i + max can be later than i
+    events = generate(p)
+    plan = plan_sends(events, p, inj)
+    sent = [i.event for i in plan.items if i.kind in ("clean", "late")]
+    pos = {e.event_id: n for n, e in enumerate(sent)}
+    max_ms = inj.late_max_seconds * 1000
+    for eid in plan.late_ids:
+        e = next(x for x in events if x.event_id == eid)
+        # every event whose time is >= t_i + max is sent after i (delay <= max)
+        for o in events:
+            if _send_ms(o) - _send_ms(e) > max_ms:
+                assert pos[o.event_id] > pos[eid]
+
+
+@given(gens, injs)
+def test_plan_is_deterministic(p: GenParams, inj: InjectParams) -> None:
+    events = generate(p)
+    assert plan_sends(events, p, inj) == plan_sends(events, p, inj)

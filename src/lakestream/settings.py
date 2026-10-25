@@ -13,7 +13,7 @@ class _Base(BaseSettings):
 class KafkaSettings(_Base):
     model_config = SettingsConfigDict(env_prefix="KAFKA_")
 
-    bootstrap_servers: str = "localhost:19092"
+    bootstrap_servers: str = "127.0.0.1:19092"
     topic: str = "shop.events"
     dlq_topic: str = "shop.events.dlq"
 
@@ -21,7 +21,7 @@ class KafkaSettings(_Base):
 class SchemaRegistrySettings(_Base):
     model_config = SettingsConfigDict(env_prefix="SCHEMA_REGISTRY_")
 
-    url: str = "http://localhost:18081"
+    url: str = "http://127.0.0.1:18081"
 
 
 class ProducerSettings(_Base):
@@ -46,7 +46,7 @@ class ProducerSettings(_Base):
 class S3Settings(_Base):
     model_config = SettingsConfigDict(env_prefix="S3_")
 
-    endpoint: str = "http://localhost:19000"
+    endpoint: str = "http://127.0.0.1:19000"
     access_key: SecretStr = SecretStr("lake_admin")
     secret_key: SecretStr = SecretStr("lake_secret_pw")
     region: str = "us-east-1"
@@ -56,7 +56,7 @@ class S3Settings(_Base):
 class IcebergSettings(_Base):
     model_config = SettingsConfigDict(env_prefix="ICEBERG_")
 
-    rest_uri: str = "http://localhost:18181"
+    rest_uri: str = "http://127.0.0.1:18181"
     warehouse: str = "s3://lakehouse/warehouse"
     catalog: str = "lake"
 
