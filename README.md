@@ -97,7 +97,7 @@ src/lakestream/
   producer/             seeded event generator, Kafka I/O, run manifest
   consumer/             Avro decode, DLQ, idempotent bronze appends
   spark/                silver and gold transforms and jobs, table maintenance
-  ops/                  lag, expectations from manifests, end-to-end check
+  ops/                  lag, DLQ viewer, expectations from manifests, end-to-end check
 tests/                  unit, spark (WSL/CI), integration (compose stack)
 docs/                   PLAN.md (contracts), DECISIONS.md (why)
 ```
