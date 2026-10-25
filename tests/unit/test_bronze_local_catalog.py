@@ -6,12 +6,16 @@ The REST catalog of the stack is not needed to exercise table creation, partitio
 
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 from pyiceberg.catalog.sql import SqlCatalog
 
+from lakestream.consumer import bronze
 from lakestream.consumer.batch import Rec
 from lakestream.consumer.bronze import (
+    FENCE_PROPERTY,
+    TABLE_PROPERTIES,
     OffsetFenceError,
     append_batch,
     bronze_schema,
@@ -124,3 +128,57 @@ def test_offset_fence_on_a_real_table(tmp_path: Path) -> None:
     append(0, 4, batch_id=4, topic="other.topic")  # nor a different topic
     append(10, 19, batch_id=5)
     assert snapshots() == 4
+
+
+def test_ensure_table_sets_the_fence_property(tmp_path: Path) -> None:
+    catalog = _catalog(tmp_path)
+    schema = bronze_schema(load_schema(1))
+    props = {k: v for k, v in TABLE_PROPERTIES.items() if k != FENCE_PROPERTY}
+    catalog.create_namespace("bronze")
+    catalog.create_table("bronze.events", schema, properties=props)
+    assert FENCE_PROPERTY not in catalog.load_table("bronze.events").properties
+    table = ensure_table(catalog, "bronze.events", schema)
+    assert table.properties[FENCE_PROPERTY] == "0"
+    assert catalog.load_table("bronze.events").properties[FENCE_PROPERTY] == "0"
+
+
+def test_conflict_between_fence_and_append_reaches_the_fence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    catalog = _catalog(tmp_path)
+    table = ensure_table(catalog, "bronze.events", bronze_schema(load_schema(1)))
+    other = catalog.load_table("bronze.events")
+    events = generate(GenParams(sessions=5))[:10]
+    at = datetime(2026, 1, 1, 12, tzinfo=UTC)
+
+    def batch(run: str) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        rows = [
+            build_row(
+                Rec(TOPIC, 0, o, 1_767_268_800_000, None, b""),
+                1,
+                events[o].as_record(),
+                run_id=run,
+                batch_id=1,
+                ingested_at=at,
+            )
+            for o in range(10)
+        ]
+        return rows, build_summary(
+            run_id=run, batch_id=1, group="g", topic=TOPIC, offsets={0: 9}, records=10,
+            dlq_records=0,
+        )  # fmt: skip
+
+    real_to_arrow = bronze.to_arrow
+    calls: list[int] = []
+
+    def racing_to_arrow(t: Any, rows: Any) -> Any:
+        if not calls:  # the zombie passed the fence; now the other writer commits the same offsets
+            calls.append(1)
+            append_batch(other, *batch("run-b"), first_offsets={0: 0}, retries=0)
+        return real_to_arrow(t, rows)
+
+    monkeypatch.setattr(bronze, "to_arrow", racing_to_arrow)
+    with pytest.raises(OffsetFenceError):
+        append_batch(table, *batch("run-a"), first_offsets={0: 0}, retries=5)
+    scanned = catalog.load_table("bronze.events").scan().to_arrow()
+    assert scanned["run_id"].to_pylist() == ["run-b"] * 10

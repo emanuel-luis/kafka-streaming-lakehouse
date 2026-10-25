@@ -41,7 +41,15 @@ from lakestream.consumer.batch import BACKOFF_SECONDS, Rec
 
 log = logging.getLogger("lakestream.bronze")
 
-TABLE_PROPERTIES = {"format-version": "2", "write.parquet.compression-codec": "zstd"}
+# PyIceberg retries a 409 inside the transaction by rebuilding the snapshot on the new head, which
+# drops the parent assertion. With 0 retries every conflict surfaces to `append_batch`, which
+# refreshes and runs the offset fence again (decision 21).
+FENCE_PROPERTY = "commit.retry.num-retries"
+TABLE_PROPERTIES = {
+    "format-version": "2",
+    "write.parquet.compression-codec": "zstd",
+    FENCE_PROPERTY: "0",
+}
 
 # (operation, additional summary properties), newest snapshot first.
 Summaries = Iterable[tuple[str, Mapping[str, str]]]
@@ -117,7 +125,7 @@ def ensure_table(catalog: Catalog, identifier: str, schema: Schema) -> Table:
     """Create the namespace and table when missing; two consumers may start at the same time."""
     catalog.create_namespace_if_not_exists(Catalog.namespace_from(identifier))
     try:
-        return catalog.load_table(identifier)
+        return _with_fence_property(catalog, catalog.load_table(identifier))
     except NoSuchTableError:
         pass
     spec = PartitionSpec(
@@ -133,7 +141,22 @@ def ensure_table(catalog: Catalog, identifier: str, schema: Schema) -> Table:
             identifier, schema, partition_spec=spec, properties=TABLE_PROPERTIES
         )
     except TableAlreadyExistsError:
-        return catalog.load_table(identifier)
+        return _with_fence_property(catalog, catalog.load_table(identifier))
+
+
+def _with_fence_property(catalog: Catalog, table: Table) -> Table:
+    """Set the fence property on a table created without it; two consumers may race to do so."""
+    if table.properties.get(FENCE_PROPERTY) == TABLE_PROPERTIES[FENCE_PROPERTY]:
+        return table
+    try:
+        with table.transaction() as tx:
+            tx.set_properties({FENCE_PROPERTY: TABLE_PROPERTIES[FENCE_PROPERTY]})
+    except CommitFailedException:  # no retry with this very property unset: reload and check
+        table = catalog.load_table(table.name())
+        if table.properties.get(FENCE_PROPERTY) != TABLE_PROPERTIES[FENCE_PROPERTY]:
+            raise
+        return table
+    return catalog.load_table(table.name())
 
 
 # --- rows -------------------------------------------------------------------------------------
@@ -300,7 +323,7 @@ def append_batch(
         except CommitFailedException:
             if attempt == retries:
                 raise
-            log.warning("commit conflict, retrying", extra={"batch_id": batch_id})
+            log.warning("commit conflict, retrying", extra={"batch_id": batch_id})  # no sleep
         except Exception as exc:
             if attempt == retries:
                 raise

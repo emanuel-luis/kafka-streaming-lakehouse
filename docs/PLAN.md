@@ -188,7 +188,9 @@ Every append carries these snapshot summary properties:
    commits atomically with the data, so the table itself says what it holds. The append also
    fences stale writers (decision 21): on every attempt, after the refresh, it raises
    `OffsetFenceError` when the group already wrote an offset at or past the batch's first one, and
-   the consumer exits without committing.
+   the consumer exits without committing. This holds because bronze sets
+   `commit.retry.num-retries=0` (`ensure_table` also sets it on an existing table), so every 409
+   reaches the consumer's own refresh-and-check loop instead of PyIceberg's internal retry.
 6. `on_revoke` drops the buffered records of revoked partitions (never written or committed, so
    the new owner reads them again). Appends and commits happen between polls and rebalance
    callbacks run only inside polls, so a batch's append and commit never straddle a rebalance.
