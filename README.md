@@ -183,8 +183,8 @@ SELECT count(*) FROM bronze.events FOR VERSION AS OF <snapshot_id>;
 ## Status
 
 The project ships in phases, one pull request each: compose and producer, consumer and bronze,
-Spark silver and gold, Trino and the end-to-end check (this one). Still to come: schema evolution
-with a DLQ walkthrough, and CI.
+Spark silver and gold, Trino and the end-to-end check, and CI (lint, unit, Spark and end-to-end
+jobs, plus a weekly dependency audit). Still to come: schema evolution with a DLQ walkthrough.
 
 ## Related
 
