@@ -45,10 +45,19 @@ run "register-schemas --version 2" schema-registry run --rm cli register-schemas
 step="register-schemas --check-only v2-breaking (must be rejected)" logs_of=schema-registry
 echo
 echo "==> ${step}"
-if docker compose run --rm cli register-schemas --check-only shop_event.v2-breaking.avsc; then
+# Only the CLI's own rejection counts: a registry error, a bad option or a compose failure must
+# fail the demo too, not pass as "rejected".
+if out=$(docker compose run --rm cli register-schemas --check-only shop_event.v2-breaking.avsc 2>&1)
+then
+  echo "${out}"
   echo "the registry accepted a breaking schema" >&2
   false
+elif [[ ${out} != *"incompatible:"* ]]; then
+  echo "${out}" >&2
+  echo "the check failed without the registry's rejection" >&2
+  false
 fi
+echo "${out}"
 run "produce --seed 43 (schema v2)" kafka run --rm producer produce --schema-version 2 \
   --base-time 2026-01-02T00:00:00Z --seed 43 --manifest "${RUN2}"
 run "lag --wait (run 2)" consumer run --rm cli lag --wait --timeout 300
