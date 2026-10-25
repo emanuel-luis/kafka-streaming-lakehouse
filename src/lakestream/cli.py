@@ -161,6 +161,37 @@ def lag(
         raise typer.Exit(code)
 
 
+@app.command()
+def check(
+    manifest: Annotated[
+        list[Path],
+        typer.Option(
+            exists=True, dir_okay=False, help="Producer manifest, repeatable; expectations summed."
+        ),
+    ],
+    timeout: Annotated[
+        float, typer.Option(help="Seconds to retry until everything matches.")
+    ] = 120,
+    time_travel: Annotated[
+        bool, typer.Option(help="Compare bronze at its first append snapshot with now.")
+    ] = True,
+) -> None:
+    """Reconcile bronze, DLQ, rejects, silver and gold with the manifests (Trino). Exit 1 on a
+    mismatch."""
+    from lakestream.ops.check import run_check
+    from lakestream.settings import KafkaSettings, TrinoSettings
+
+    code = run_check(
+        manifests=manifest,
+        trino_cfg=TrinoSettings(),
+        kafka=KafkaSettings(),
+        timeout=timeout,
+        with_time_travel=time_travel,
+    )
+    if code:
+        raise typer.Exit(code)
+
+
 def _spark_session(app_name: str) -> tuple[str, Any]:
     """Run id (logging configured) and a SparkSession for one job."""
     from lakestream.logging import configure_logging
