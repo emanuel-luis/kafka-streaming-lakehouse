@@ -1,5 +1,7 @@
 SHELL := bash
 .DEFAULT_GOAL := help
+# Git Bash on Windows would rewrite container paths such as /runs/run1.json into Windows paths.
+export MSYS_NO_PATHCONV := 1
 
 .PHONY: help install lint fmt test-fast test-spark test-integration test up down ps logs ui produce lag silver gold maintain check demo
 
