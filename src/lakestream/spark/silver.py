@@ -7,6 +7,7 @@ from pyspark.sql import functions as F
 
 from lakestream import contracts
 from lakestream.contracts import REJECT_REASONS, REQUIRED_FIELDS, WATERMARK_DELAY
+from lakestream.spark.tables import SILVER_EVENTS
 
 SILVER_COLUMNS = (
     "event_id",
@@ -23,6 +24,7 @@ SILVER_COLUMNS = (
     "currency",
     "payment_method",
     "payment_status",
+    "device_type",  # schema v2; null when bronze has no such column yet
     "kafka_partition",
     "kafka_offset",
     "ingested_at",
@@ -88,8 +90,12 @@ def dedupe(df: DataFrame, delay: str = WATERMARK_DELAY) -> DataFrame:
 
 
 def project_silver(df: DataFrame) -> DataFrame:
-    # Phase 5 adds device_type here.
-    return df.select(*SILVER_COLUMNS, F.current_timestamp().alias("processed_at"))
+    """Silver columns; one bronze lacks (a v1-only bronze has no device_type) is a typed null."""
+    columns = [
+        F.col(c) if c in df.columns else F.lit(None).cast(SILVER_EVENTS[c].dataType).alias(c)
+        for c in SILVER_COLUMNS
+    ]
+    return df.select(*columns, F.current_timestamp().alias("processed_at"))
 
 
 def project_rejects(df: DataFrame) -> DataFrame:

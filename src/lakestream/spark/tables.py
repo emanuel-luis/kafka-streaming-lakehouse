@@ -48,6 +48,7 @@ SILVER_EVENTS = _schema(
     ("currency", _STR),
     ("payment_method", _STR),
     ("payment_status", _STR),
+    ("device_type", _STR),  # schema v2
     ("kafka_partition", _INT),
     ("kafka_offset", _LONG),
     ("ingested_at", _TS),
@@ -139,9 +140,27 @@ def create_table_sql(table: TableDef) -> str:
     )
 
 
+def add_columns_sql(table: TableDef, existing: list[str]) -> list[str]:
+    """`ADD COLUMN` statements for contract columns an older table lacks, each in its place.
+
+    New columns are nullable, so the change is safe for readers of older snapshots.
+    """
+    out = []
+    for i, f in enumerate(table.schema.fields):
+        if f.name in existing:
+            continue
+        place = "FIRST" if i == 0 else f"AFTER `{table.schema.fields[i - 1].name}`"
+        out.append(
+            f"ALTER TABLE {table.name} ADD COLUMN `{f.name}` {f.dataType.simpleString()} {place}"
+        )
+    return out
+
+
 def ensure_tables(spark: SparkSession) -> None:
-    """Create the namespaces and tables when missing (in the session's default catalog)."""
+    """Create the namespaces and tables when missing, and add contract columns they lack."""
     for namespace in sorted({t.name.split(".")[0] for t in TABLES}):
         spark.sql(f"CREATE NAMESPACE IF NOT EXISTS {namespace}")
     for table in TABLES:
         spark.sql(create_table_sql(table))
+        for sql in add_columns_sql(table, spark.table(table.name).columns):
+            spark.sql(sql)

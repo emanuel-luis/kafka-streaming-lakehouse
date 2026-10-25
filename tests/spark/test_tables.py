@@ -43,3 +43,14 @@ def test_create_table_sql() -> None:
         "`unique_users` bigint) USING iceberg PARTITIONED BY (days(window_start)) "
         "TBLPROPERTIES ('format-version'='2')"
     )
+
+
+def test_add_columns_sql_places_each_missing_column() -> None:
+    events = tables.TABLES[0]
+    names = events.schema.fieldNames()
+    assert tables.add_columns_sql(events, names) == []
+    without = [n for n in names if n != "device_type"]
+    assert tables.add_columns_sql(events, without) == [
+        "ALTER TABLE silver.events ADD COLUMN `device_type` string AFTER `payment_status`"
+    ]
+    assert tables.add_columns_sql(events, names[1:])[0].endswith("`event_id` string FIRST")
