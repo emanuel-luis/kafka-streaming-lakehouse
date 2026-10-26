@@ -75,6 +75,7 @@ def test_run_id(monkeypatch: pytest.MonkeyPatch) -> None:
         ["gold"],
         ["maintain"],
         ["spark-warmup"],
+        ["check"],
     ],
 )
 def test_help(args: list[str]) -> None:

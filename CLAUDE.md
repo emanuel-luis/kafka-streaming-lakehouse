@@ -17,6 +17,8 @@ portfolio repo; all data is synthetic.
 - `make produce`: run the producer once inside the stack; the manifest lands in `/runs`.
 - `make ui`: Kafbat UI on http://localhost:18090 (profile `ui`).
 - `make silver` / `make gold` / `make maintain`: Spark jobs in the `spark-job` container.
+- `make check`: `lakestream check` in the `cli` container (`MANIFESTS="--manifest /runs/run1.json"`).
+- `make demo`: `scripts/demo.sh`, the whole run from fresh volumes (a stack run: heavy lock).
 - Spark tests and jobs never run in Windows Python. On the owner's machine:
   `wsl -d Ubuntu -e bash -lc 'cd /mnt/d/dev/Pessoal/kafka-streaming-lakehouse && UV_PROJECT_ENVIRONMENT=$HOME/.venvs/kafka-streaming-lakehouse make test-spark'`.
 
@@ -31,13 +33,16 @@ portfolio repo; all data is synthetic.
 - `docker/app.Dockerfile`: `app` target (no JVM) and `spark` target (Temurin 17 JRE, `--extra spark`,
   Iceberg jars resolved into `/opt/spark-ivy` at build time). Compose service `spark-job` (profile
   `tools`, checkpoints on volume `spark_checkpoints`, Spark UI on port 14040).
-- `scripts/create-topics.sh`: topic creation run by `kafka-init`.
+- `scripts/create-topics.sh`: topic creation run by `kafka-init`. `scripts/demo.sh`: `make demo`.
+- `trino/catalog/lake.properties`: Trino Iceberg catalog (REST + native S3, keys from env); service
+  `trino` (port 18080, heap via `JAVA_TOOL_OPTIONS`).
 - `src/lakestream/`: `cli.py` (Typer, single entry point), `settings.py`, `logging.py`,
   `runmeta.py`, `contracts.py` (event types, reject reasons, watermark), `registry.py`,
   `schemas/*.avsc`, `producer/` (pure generator + Kafka I/O + manifest), `consumer/` (bronze),
   `spark/` (the only package that imports pyspark: `session`, `tables` (every Spark table schema),
   pure `silver`/`gold` transforms, `silver_job`, `gold_job`, `maintain`, `runlog`, and the pure
-  `checkpoint` parser).
+  `checkpoint` parser), `ops/` (`lag`, pure `expectations` built from manifests, `check` through
+  the trino client).
 - `tests/unit/` (no network, no JVM), `tests/integration/` (compose stack), `tests/spark/` (WSL/CI).
 
 ## Invariants

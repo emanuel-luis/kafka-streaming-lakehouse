@@ -358,7 +358,7 @@ Trino `lake.properties`: `connector.name=iceberg`, `iceberg.catalog.type=rest`,
 `iceberg.rest-catalog.warehouse=s3://lakehouse/warehouse`, `fs.s3.enabled=true` (or
 `fs.native-s3.enabled=true` if 484 rejects it), `s3.endpoint=http://s3:9000`,
 `s3.region=${ENV:S3_REGION}`, `s3.path-style-access=true`, `s3.aws-access-key=${ENV:S3_ACCESS_KEY}`,
-`s3.aws-secret-key=${ENV:S3_SECRET_KEY}`.
+`s3.aws-secret-key=${ENV:S3_SECRET_KEY}`. Trino 484 accepts `fs.s3.enabled` (decision 25).
 
 ## Compose (project `kafka-streaming-lakehouse`, no `container_name`, network `lake`)
 
@@ -372,9 +372,9 @@ Trino `lake.properties`: `connector.name=iceberg`, `iceberg.catalog.type=rest`,
 | s3-init | curl, `create-bucket.sh` | | 64m | one-shot | s3 healthy |
 | iceberg-rest | fixture, SQLite WAL on volume `catalog_data:/data` | | 384m | `curl /v1/config`, or a bash `/dev/tcp` probe | s3-init completed |
 | consumer | app: `consume`, `deploy.replicas: 2`, `restart: on-failure`, no ports | | 384m each | heartbeat file newer than 60 s | kafka-init, schema-init, iceberg-rest |
-| trino | trino, `./trino/catalog:/etc/trino/catalog:ro` | | 1536m | built-in `health-check` | iceberg-rest |
+| trino | trino, `./trino/catalog:/etc/trino/catalog:ro`, heap `-Xmx1g` | | 1536m | built-in `health-check`, 90 s start period | iceberg-rest |
 | producer | app | tools | 256m | none | kafka-init, schema-init |
-| cli | app (`lag`, `check`, `dlq`) | tools | 256m | none | trino |
+| cli | app (`lag`, `check`, `dlq`), `demo_runs` at `/runs` | tools | 256m | none | kafka, trino |
 | spark-job | spark | tools | 2g | disabled | iceberg-rest |
 | kafka-ui | kafbat (cluster plus schema registry) | ui | 512m | | kafka |
 
@@ -388,7 +388,7 @@ Trino `lake.properties`: `connector.name=iceberg`, `iceberg.catalog.type=rest`,
 
 ## make demo (`scripts/demo.sh`, printing diagnostics on error)
 
-1. `docker compose down -v --remove-orphans`, then `up -d --build --wait`.
+1. `docker compose down -v --remove-orphans` (every profile), then `up -d --build --wait`.
 2. `run --rm producer produce --seed 42 --manifest /runs/run1.json`.
 3. `run --rm cli lag --wait --timeout 300`: total lag 0 and every partition has a committed
    offset.

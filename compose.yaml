@@ -1,6 +1,6 @@
 # Memory limits (full stack, see docs/PLAN.md for the whole table):
 #   long-running: kafka 1g (heap 512m) | schema-registry 512m (heap 256m) | s3 512m |
-#   iceberg-rest 384m (heap 192m) | consumer 2 x 384m = 3.2 GB so far (trino comes later).
+#   iceberg-rest 384m (heap 192m) | consumer 2 x 384m | trino 1536m (heap 1g) = about 4.7 GB.
 #   On demand: kafka-ui 512m (profile ui); producer 256m, cli 256m and spark-job 2g (profile tools).
 #   One-shot init containers: kafka-init 384m, schema-init 256m, s3-init 64m.
 name: kafka-streaming-lakehouse
@@ -19,6 +19,8 @@ x-app-env: &app-env
   ICEBERG_REST_URI: http://iceberg-rest:8181
   ICEBERG_WAREHOUSE: ${ICEBERG_WAREHOUSE:-s3://lakehouse/warehouse}
   ICEBERG_CATALOG: ${ICEBERG_CATALOG:-lake}
+  TRINO_HOST: trino
+  TRINO_PORT: "8080"
 
 x-app-build: &app-build
   context: .
@@ -232,6 +234,35 @@ services:
       start_period: 30s
     networks: [lake]
 
+  trino:
+    image: trinodb/trino:484
+    mem_limit: 1536m
+    depends_on:
+      iceberg-rest:
+        condition: service_healthy
+    environment:
+      # Read by lake.properties through ${ENV:...}; the file itself holds no secret.
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-lake_admin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-lake_secret_pw}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+      # The image's jvm.config sizes the heap with MaxRAMPercentage=80 (1.2g of 1536m), which
+      # leaves too little for code cache and metaspace; an explicit -Xmx takes precedence.
+      JAVA_TOOL_OPTIONS: -Xms512m -Xmx1g
+    ports:
+      - "127.0.0.1:${TRINO_PORT:-18080}:8080"
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog:ro
+    # No `test`: Docker keeps the image's probe (/usr/lib/trino/bin/health-check) and only the
+    # timing changes; the image's 10 s start period is short for a JVM on a busy laptop.
+    healthcheck:
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 90s
+    networks: [lake]
+
   producer:
     build: *app-build
     image: lakestream-app:local
@@ -268,9 +299,15 @@ services:
     depends_on:
       kafka:
         condition: service_healthy
+      trino:
+        condition: service_healthy
     environment:
       <<: *app-env
       CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID:-bronze-ingest}
+      TRINO_USER: ${TRINO_USER:-lakestream}
+      TRINO_CATALOG: ${TRINO_CATALOG:-lake}
+    volumes:
+      - demo_runs:/runs
     networks: [lake]
 
   spark-job:
