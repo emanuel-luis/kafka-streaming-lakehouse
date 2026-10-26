@@ -1,0 +1,21 @@
+{
+  "type": "record",
+  "name": "ShopEvent",
+  "namespace": "lakehouse.shop",
+  "fields": [
+    {"name": "event_id", "type": "string"},
+    {"name": "event_type", "type": "string"},
+    {"name": "event_time", "type": {"type": "long", "logicalType": "timestamp-millis"}},
+    {"name": "user_id", "type": "string"},
+    {"name": "session_id", "type": "string"},
+    {"name": "page_url", "type": ["null", "string"], "default": null},
+    {"name": "product_id", "type": ["null", "string"], "default": null},
+    {"name": "quantity", "type": ["null", "int"], "default": null},
+    {"name": "unit_price", "type": ["null", {"type": "bytes", "logicalType": "decimal", "precision": 10, "scale": 2}], "default": null},
+    {"name": "order_id", "type": ["null", "string"], "default": null},
+    {"name": "amount", "type": ["null", {"type": "bytes", "logicalType": "decimal", "precision": 12, "scale": 2}], "default": null},
+    {"name": "currency", "type": ["null", "string"], "default": null},
+    {"name": "payment_method", "type": ["null", "string"], "default": null},
+    {"name": "payment_status", "type": ["null", "string"], "default": null}
+  ]
+}

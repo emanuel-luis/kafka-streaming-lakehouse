@@ -1,0 +1,54 @@
+# CLAUDE.md
+
+Kafka end to end into a lakehouse: Python producer (Avro + Schema Registry) -> Kafka (KRaft) ->
+Python consumer group (PyIceberg bronze, DLQ) -> Spark Structured Streaming silver -> Spark batch
+gold -> Trino. Iceberg tables on S3-compatible storage through an Iceberg REST catalog. Public
+portfolio repo; all data is synthetic.
+
+## Commands
+
+- `make install`: `uv sync`.
+- `make lint`: ruff check, ruff format --check, mypy strict on `src` (same as the CI lint job).
+- `make test-fast`: pytest with the default selection (deselects `spark` and `integration`).
+- `make test-integration`: tests against the running compose stack (`make up` first).
+- `make up` / `make down`: start the stack (healthchecks, `--wait`) / remove it with its volumes.
+- `make produce`: run the producer once inside the stack; the manifest lands in `/runs`.
+- `make ui`: Kafbat UI on http://localhost:18090 (profile `ui`).
+- Spark tests and jobs never run in Windows Python. On the owner's machine:
+  `wsl -d Ubuntu -e bash -lc 'cd /mnt/d/dev/Pessoal/kafka-streaming-lakehouse && UV_PROJECT_ENVIRONMENT=$HOME/.venvs/kafka-streaming-lakehouse make test-spark'`.
+
+## Repo map
+
+- `docs/PLAN.md`: the contract (topics, Avro schema, tables, env vars, CLI, compose services,
+  phases). `docs/DECISIONS.md`: decision log with reasons.
+- `compose.yaml`: the stack; project name `kafka-streaming-lakehouse`; host ports from `.env`.
+- `docker/app.Dockerfile`: `app` target (no JVM); phase 3 adds the `spark` target.
+- `scripts/create-topics.sh`: topic creation run by `kafka-init`.
+- `src/lakestream/`: `cli.py` (Typer, single entry point), `settings.py`, `logging.py`,
+  `runmeta.py`, `contracts.py` (event types, reject reasons, watermark), `registry.py`,
+  `schemas/*.avsc`, `producer/` (pure generator + Kafka I/O + manifest).
+- `tests/unit/` (no network, no JVM), `tests/integration/` (compose stack), `tests/spark/` (WSL/CI).
+
+## Invariants
+
+- Names in `docs/PLAN.md` are contracts: change the Python side and the compose side together.
+- Event time comes from a fixed synthetic base, never the wall clock; the same seed produces the
+  same events, so silver and gold counts are exact and repeatable.
+- The bronze table is append-only, and every bronze append records its Kafka offsets in the
+  snapshot summary (`ingest.offsets`); the consumer commits Kafka offsets only after that append.
+- `cli`, `settings`, `logging`, `runmeta`, `contracts`, `registry`, `producer`, `consumer` and
+  `ops` never import pyspark; `cli.py` imports command modules inside the command functions.
+- The producer refuses spans above `MAX_SPAN_MINUTES` (150) so the silver watermark (3 hours)
+  never drops a record from a normal run.
+- Image tags and Python pins move together with `docs/PLAN.md` and `docs/DECISIONS.md`.
+
+## Conventions
+
+- Python 3.12, uv, ruff (line length 100, `BLE`), mypy strict, pytest with Hypothesis.
+- Settings through pydantic-settings; secrets as `SecretStr`, never logged.
+- Logs are JSON lines with UTC timestamps and `run_id` / `batch_id`.
+- Conventional Commits in English; one PR per phase, stacked.
+- Stack and Spark runs on the owner's machine take the shared heavy lock
+  (`D:/dev/Pessoal/.locks/heavy`) and end with `make down`.
+- Host ports default to the 1xxxx range so the stack can run next to `cdc-streaming-demo`.
+- No employer names, hosts or identifiers anywhere in this repo.
