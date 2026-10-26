@@ -17,6 +17,43 @@ the producer says it sent.
 | Gold | `lake.gold.events_per_minute`, `lake.gold.revenue_5min`, `lake.gold.user_sessions` | event-time aggregates recomputed in batch by Spark |
 | Trino | catalog `lake` | SQL over every table, including snapshot metadata and time travel |
 
+## What this demonstrates
+
+- Producer idempotence: the producer sets `enable.idempotence=true` and `acks=all`, so a retried
+  send cannot write a record twice into its partition ([producer/run.py](src/lakestream/producer/run.py)).
+- Keys and partitioning: records are keyed by `user_id` and placed with `murmur2_random`, the hash
+  Java clients use, so every event of a user lands in one partition in send order
+  ([producer/run.py](src/lakestream/producer/run.py), [PLAN.md](docs/PLAN.md#kafka-contract)).
+- Consumer groups and rebalances: two consumer replicas share the six partitions with the
+  cooperative-sticky assignor, drop the buffered records of a revoked partition and resume an
+  assigned one at max(committed offset, last offset in bronze + 1)
+  ([consumer/run.py](src/lakestream/consumer/run.py)).
+- Manual offset commits after durable writes: auto commit is off, and the consumer commits a
+  batch's offsets only after the Iceberg append that also stores them in the snapshot summary
+  ([consumer/bronze.py](src/lakestream/consumer/bronze.py), decision 14 in
+  [DECISIONS.md](docs/DECISIONS.md)).
+- Dead letter queue: a record that cannot be decoded goes to `shop.events.dlq` with its original
+  bytes and the error and coordinates in headers, and `lakestream dlq` prints them
+  ([consumer/dlq.py](src/lakestream/consumer/dlq.py), [ops/dlq_show.py](src/lakestream/ops/dlq_show.py)).
+- Schema evolution: v2 adds an optional `device_type` under BACKWARD compatibility, the registry
+  rejects a required field with no default, and the consumer adds the new column to bronze with
+  `union_by_name` before it appends ([registry.py](src/lakestream/registry.py),
+  [consumer/bronze.py](src/lakestream/consumer/bronze.py), [schemas](src/lakestream/schemas)).
+- Event time vs processing time: event time comes from a fixed synthetic base and drives every
+  gold window, while `ingested_at` and `processed_at` record when each layer handled the row
+  ([producer/generator.py](src/lakestream/producer/generator.py), [spark/gold.py](src/lakestream/spark/gold.py)).
+- Late data: some events are sent after a newer event of the same user, and they still count in
+  the window of their own event time because the silver watermark (3 hours) is longer than any run
+  ([spark/silver.py](src/lakestream/spark/silver.py), decision 16).
+- Iceberg snapshots and time travel: every bronze append is a snapshot that records its Kafka
+  offsets, and the check reads bronze and gold `FOR VERSION AS OF` an earlier snapshot
+  ([ops/check.py](src/lakestream/ops/check.py)).
+- Append fence: a consumer that stalled past its poll interval cannot append offsets another
+  replica already wrote, because each append checks the refreshed offsets and asserts its parent
+  snapshot (decision 21, [consumer/bronze.py](src/lakestream/consumer/bronze.py)).
+- Maintenance clamp: `maintain` compacts every table but never expires a bronze snapshot the
+  silver streams may still read (decisions 22 and 24, [spark/maintain.py](src/lakestream/spark/maintain.py)).
+
 ## Architecture
 
 ```mermaid
@@ -60,7 +97,7 @@ src/lakestream/
   producer/             seeded event generator, Kafka I/O, run manifest
   consumer/             Avro decode, DLQ, idempotent bronze appends
   spark/                silver and gold transforms and jobs, table maintenance
-  ops/                  lag, expectations from manifests, end-to-end check
+  ops/                  lag, DLQ viewer, expectations from manifests, end-to-end check
 tests/                  unit, spark (WSL/CI), integration (compose stack)
 docs/                   PLAN.md (contracts), DECISIONS.md (why)
 ```
@@ -87,7 +124,12 @@ make demo
 4. the silver stream (available-now) and the gold recompute;
 5. `lakestream check`, which compares every layer with the manifest through Trino and reads the
    DLQ from Kafka, then exits 1 on any mismatch;
-6. `maintain` (compaction, manifest rewrite, snapshot expiry), then the same check again.
+6. schema v2: `register-schemas --version 2`, then `register-schemas --check-only` on
+   `shop_event.v2-breaking.avsc`, which the registry must reject;
+7. run 2: the producer with schema v2, seed 43 and event time on the next day (`/runs/run2.json`),
+   then lag, silver, gold, the check over both manifests (with gold time travel to the run-1
+   snapshot) and `dlq --limit 3`;
+8. `maintain` (compaction, manifest rewrite, snapshot expiry), then the same check again.
 
 Event time comes from a fixed synthetic base, so the same seed gives the same gold tables on
 every run. When you are done, `make down` removes the stack and its volumes.
@@ -162,6 +204,26 @@ Time travel: bronze as of one of those snapshots (paste a `snapshot_id` from the
 SELECT count(*) FROM bronze.events FOR VERSION AS OF <snapshot_id>;
 ```
 
+Schema evolution: run 1 was sent with schema v1, so its rows have no device.
+
+```sql
+SELECT schema_id, device_type, count(*) AS n
+FROM bronze.events
+GROUP BY 1, 2
+ORDER BY 1, 2;
+```
+
+## Dead letters
+
+`lakestream dlq` prints the oldest records of `shop.events.dlq`: the headers (error class and
+message, original topic, partition, offset and timestamp, consumer group, run id) and a hex
+preview of the original value. It assigns the partitions with a throwaway group and never commits,
+so it can run at any time.
+
+```bash
+docker compose run --rm cli dlq --limit 10
+```
+
 ## Make targets
 
 | Target | What it does |
@@ -181,8 +243,8 @@ SELECT count(*) FROM bronze.events FOR VERSION AS OF <snapshot_id>;
 ## Status
 
 The project ships in phases, one pull request each: compose and producer, consumer and bronze,
-Spark silver and gold, Trino and the end-to-end check (this one). Still to come: schema evolution
-with a DLQ walkthrough, and CI.
+Spark silver and gold, Trino and the end-to-end check, schema evolution with the DLQ command
+(this one). Still to come: CI.
 
 ## Related
 

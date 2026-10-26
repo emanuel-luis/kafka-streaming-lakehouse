@@ -21,6 +21,7 @@ from lakestream.consumer.batch import Rec
 from lakestream.consumer.bronze import (
     OffsetFenceError,
     append_batch,
+    avro_fields,
     avro_to_iceberg,
     bronze_schema,
     build_row,
@@ -270,3 +271,15 @@ def test_append_fenced_by_a_zombie_write_is_never_retried() -> None:
 
 def test_summary_offsets_are_json() -> None:
     assert json.loads(_summary()["ingest.offsets"]) == {"0": 2}
+
+
+def test_v2_writer_schema_maps_device_type() -> None:
+    fields = avro_fields(json.loads(load_schema(2)))
+    assert [f.name for f in fields[:-1]] == [
+        f.name for f in avro_fields(json.loads(load_schema(1)))
+    ]
+    assert (fields[-1].name, fields[-1].field_type, fields[-1].required) == (
+        "device_type",
+        StringType(),
+        False,
+    )
