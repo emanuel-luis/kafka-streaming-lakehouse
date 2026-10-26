@@ -17,6 +17,7 @@ from pyiceberg.catalog import Catalog
 from pyiceberg.exceptions import (
     CommitFailedException,
     NoSuchTableError,
+    ServerError,
     TableAlreadyExistsError,
 )
 from pyiceberg.partitioning import PartitionField, PartitionSpec
@@ -142,9 +143,27 @@ def evolve_schema(table: Table, fields: Iterable[NestedField]) -> Table:
     return table
 
 
+def _lost_create_race(what: str, exc: ServerError) -> None:
+    log.warning(
+        "lost a create race to another consumer, using the existing object",
+        extra={"object": what, "error": str(exc)},
+    )
+
+
 def ensure_table(catalog: Catalog, identifier: str, schema: Schema) -> Table:
-    """Create the namespace and table when missing; two consumers may start at the same time."""
-    catalog.create_namespace_if_not_exists(Catalog.namespace_from(identifier))
+    """Create the namespace and table when missing; two consumers may start at the same time.
+
+    The REST catalog fixture answers a lost create race with a 500 (its JDBC INSERT breaks a
+    unique key), not a 409, so PyIceberg raises ServerError instead of the AlreadyExists error.
+    A ServerError is absorbed only when the object now exists.
+    """
+    namespace = Catalog.namespace_from(identifier)
+    try:
+        catalog.create_namespace_if_not_exists(namespace)
+    except ServerError as exc:
+        if not catalog.namespace_exists(namespace):
+            raise
+        _lost_create_race("namespace", exc)
     try:
         return _with_fence_property(catalog, catalog.load_table(identifier))
     except NoSuchTableError:
@@ -163,6 +182,13 @@ def ensure_table(catalog: Catalog, identifier: str, schema: Schema) -> Table:
         )
     except TableAlreadyExistsError:
         return _with_fence_property(catalog, catalog.load_table(identifier))
+    except ServerError as exc:
+        try:
+            table = catalog.load_table(identifier)
+        except NoSuchTableError:
+            raise exc from None
+        _lost_create_race("table", exc)
+        return _with_fence_property(catalog, table)
 
 
 def _with_fence_property(catalog: Catalog, table: Table) -> Table:

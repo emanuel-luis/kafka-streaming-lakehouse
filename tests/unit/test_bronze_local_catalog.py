@@ -11,7 +11,7 @@ from typing import Any
 
 import pytest
 from pyiceberg.catalog.sql import SqlCatalog
-from pyiceberg.exceptions import CommitFailedException
+from pyiceberg.exceptions import CommitFailedException, ServerError
 from pyiceberg.types import StringType
 
 from lakestream.consumer import bronze
@@ -297,3 +297,51 @@ def test_fence_reads_the_metadata_of_the_schema_commit(
     loaded = catalog.load_table("bronze.events")
     assert loaded.schema().find_field("device_type") is not None  # the schema commit landed
     assert loaded.scan().to_arrow()["run_id"].to_pylist() == ["run-b"] * 5
+
+
+@pytest.mark.parametrize("other_created_it", [True, False])
+def test_namespace_create_race_answered_with_a_server_error(
+    tmp_path: Path, other_created_it: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The REST fixture answers the losing INSERT with a 500, which PyIceberg raises as
+    ServerError; only an object that now exists makes it a lost race."""
+    catalog = _catalog(tmp_path)
+    real = catalog.create_namespace_if_not_exists
+
+    def racing(namespace: Any, *args: Any, **kwargs: Any) -> None:
+        if other_created_it:
+            real(namespace)
+        raise ServerError("UncheckedSQLException: Failed to execute: INSERT INTO ...")
+
+    catalog.create_namespace_if_not_exists = racing  # type: ignore[method-assign]
+    if not other_created_it:
+        with pytest.raises(ServerError):
+            ensure_table(catalog, "bronze.events", bronze_schema(load_schema(1)))
+        return
+    table = ensure_table(catalog, "bronze.events", bronze_schema(load_schema(1)))
+    assert table.properties[FENCE_PROPERTY] == "0"
+    assert "lost a create race to another consumer, using the existing object" in caplog.messages
+
+
+@pytest.mark.parametrize("other_created_it", [True, False])
+def test_table_create_race_answered_with_a_server_error(
+    tmp_path: Path, other_created_it: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    catalog = _catalog(tmp_path)
+    schema = bronze_schema(load_schema(1))
+    real = catalog.create_table
+
+    def racing(identifier: Any, *args: Any, **kwargs: Any) -> Any:
+        if other_created_it:  # the other replica, created without the fence property
+            props = {k: v for k, v in TABLE_PROPERTIES.items() if k != FENCE_PROPERTY}
+            real(identifier, schema, properties=props)
+        raise ServerError("UncheckedSQLException: Failed to execute: INSERT INTO ...")
+
+    catalog.create_table = racing  # type: ignore[method-assign]
+    if not other_created_it:
+        with pytest.raises(ServerError):
+            ensure_table(catalog, "bronze.events", schema)
+        return
+    table = ensure_table(catalog, "bronze.events", schema)
+    assert table.properties[FENCE_PROPERTY] == "0"  # set through _with_fence_property
+    assert "lost a create race to another consumer, using the existing object" in caplog.messages

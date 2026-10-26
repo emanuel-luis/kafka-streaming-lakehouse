@@ -55,3 +55,9 @@ All notable changes to this project are documented here. The format follows
 - After a restart, the consumer commits the resume offset taken from bronze snapshots when it is
   ahead of the group's Kafka commit, so lag reaches 0 without new records.
 - Tooling: uv, ruff, mypy, pytest, Makefile, `.env.example` and the `app` Docker image.
+
+### Fixed
+
+- Two consumers starting at once no longer crash when the REST catalog answers the losing
+  namespace or table create with a 500 instead of a 409: the consumer uses the object the other
+  one created, and logs a warning.
