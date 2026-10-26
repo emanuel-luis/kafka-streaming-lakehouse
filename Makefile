@@ -1,7 +1,7 @@
 SHELL := bash
 .DEFAULT_GOAL := help
 
-.PHONY: help install lint fmt test-fast test-integration test up down ps logs ui produce
+.PHONY: help install lint fmt test-fast test-integration test up down ps logs ui produce lag
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-17s %s\n", $$1, $$2}'
@@ -26,15 +26,10 @@ test-integration: ## Integration tests (stack must be up)
 
 test: test-fast ## Everything that runs without the stack
 
-# `up --wait` treats a one-shot service as "completed successfully" only when an active service
-# depends on it with that condition; otherwise it waits for "running" and fails on the exit.
-# Until the consumer (phase 2) depends on the init jobs, run them with `run --rm`, which returns
-# their exit code. `--build` on `run` rebuilds lakestream-app:local (no `build:` on the `up`
-# services), so a src/ change never runs a stale image.
-up: ## Start the stack in the background, wait until healthy, run the init jobs
-	docker compose up -d --build --wait kafka schema-registry
-	docker compose run --rm kafka-init
-	docker compose run --rm --build schema-init
+# The consumer depends on every init job with `service_completed_successfully`, so `--wait` treats
+# them as one-shots and fails if one exits non-zero (docs/DECISIONS.md 19).
+up: ## Start the stack in the background and wait until it is healthy
+	docker compose up -d --build --wait
 
 down: ## Stop the stack and delete its volumes
 	docker compose --profile tools --profile ui down -v --remove-orphans
@@ -51,3 +46,6 @@ ui: ## Start Kafka UI (http://localhost:18090)
 ARGS ?= --manifest /runs/run1.json
 produce: ## Run the producer (override options with ARGS="...")
 	docker compose run --rm --build producer produce $(ARGS)
+
+lag: ## Wait until the consumer group has caught up with the topic
+	docker compose run --rm --build cli lag --wait
