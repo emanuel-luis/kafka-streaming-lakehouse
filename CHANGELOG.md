@@ -21,6 +21,14 @@ All notable changes to this project are documented here. The format follows
 - Bronze appends are fenced against offsets another writer of the group already wrote; the table
   sets `commit.retry.num-retries=0` so every commit conflict reaches the fence.
 - `lakestream lag --wait` treats a partition that never received a message as caught up.
+- Spark job layer: `lakestream silver` (two Iceberg streaming queries from bronze into
+  `silver.events` and `silver.rejects`, `available-now` or `processing-time`), `lakestream gold`
+  (recompute of the three gold tables from one silver snapshot), `lakestream maintain`
+  (compaction, manifest rewrite, snapshot expiry; bronze expiry never passes the initial or the
+  resume snapshot of the silver queries) and `lakestream spark-warmup`. Every job run appends a row to
+  `ops.job_runs`.
+- `spark` image target (Temurin 17 JRE, Iceberg packages baked in) and the `spark-job` compose
+  service (profile `tools`); `make silver`, `make gold`, `make maintain`.
 - After a restart, the consumer commits the resume offset taken from bronze snapshots when it is
   ahead of the group's Kafka commit, so lag reaches 0 without new records.
 - Tooling: uv, ruff, mypy, pytest, Makefile, `.env.example` and the `app` Docker image.
