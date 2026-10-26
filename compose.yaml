@@ -1,7 +1,7 @@
 # Memory limits (full stack, see docs/PLAN.md for the whole table):
 #   long-running: kafka 1g (heap 512m) | schema-registry 512m (heap 256m) | s3 512m |
-#   iceberg-rest 384m (heap 192m) | consumer 2 x 384m = 3.2 GB so far (trino and spark-job come later).
-#   On demand: kafka-ui 512m (profile ui); producer 256m and cli 256m (profile tools).
+#   iceberg-rest 384m (heap 192m) | consumer 2 x 384m = 3.2 GB so far (trino comes later).
+#   On demand: kafka-ui 512m (profile ui); producer 256m, cli 256m and spark-job 2g (profile tools).
 #   One-shot init containers: kafka-init 384m, schema-init 256m, s3-init 64m.
 name: kafka-streaming-lakehouse
 
@@ -273,6 +273,36 @@ services:
       CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID:-bronze-ingest}
     networks: [lake]
 
+  spark-job:
+    build:
+      <<: *app-build
+      target: spark
+    image: lakestream-spark:local
+    mem_limit: 2g
+    profiles: [tools]
+    command: ["silver", "--trigger", "available-now"]
+    depends_on:
+      iceberg-rest:
+        condition: service_healthy
+    environment:
+      <<: *app-env
+      SPARK_MASTER: ${SPARK_MASTER:-local[2]}
+      SPARK_DRIVER_MEMORY: ${SPARK_DRIVER_MEMORY:-1g}
+      SPARK_IVY_DIR: /opt/spark-ivy
+      SPARK_CHECKPOINT_ROOT: /checkpoints
+      AWS_REGION: ${S3_REGION:-us-east-1}
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+    ports:
+      - "127.0.0.1:${SPARK_UI_PORT:-14040}:4040"
+    volumes:
+      - spark_checkpoints:/checkpoints
+    # A batch job, not a service: no probe.
+    healthcheck:
+      disable: true
+    stop_grace_period: 60s
+    networks: [lake]
+
   kafka-ui:
     image: ghcr.io/kafbat/kafka-ui:v1.5.0
     mem_limit: 512m
@@ -299,4 +329,5 @@ volumes:
   kafka_data:
   s3_data:
   catalog_data:
+  spark_checkpoints:
   demo_runs:
