@@ -63,6 +63,14 @@ def test_run_id(monkeypatch: pytest.MonkeyPatch) -> None:
     assert get_run_id() == "fixed"
 
 
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def plain(output: str) -> str:
+    """CLI output without ANSI styles: Typer forces Rich colours when GITHUB_ACTIONS is set."""
+    return ANSI.sub("", output)
+
+
 @pytest.mark.parametrize(
     "args",
     [
@@ -82,7 +90,7 @@ def test_run_id(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_help(args: list[str]) -> None:
     result = CliRunner().invoke(app, [*args, "--help"])
     assert result.exit_code == 0
-    assert "Usage" in result.output
+    assert "Usage" in plain(result.output)
 
 
 def test_produce_rejects_long_span() -> None:
@@ -92,8 +100,8 @@ def test_produce_rejects_long_span() -> None:
 
 def test_consume_hides_the_test_hook() -> None:
     result = CliRunner().invoke(app, ["consume", "--help"])
-    assert "--exit-when-idle" in result.output
-    assert "--crash-after-write-batch" not in result.output
+    assert "--exit-when-idle" in plain(result.output)
+    assert "--crash-after-write-batch" not in plain(result.output)
 
 
 def test_spark_settings_and_session_conf(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -162,4 +170,4 @@ def test_check_only_reports_the_registry_answer(
     args = ["register-schemas", "--check-only", "shop_event.v2-breaking.avsc"]
     result = CliRunner().invoke(app, args)
     assert result.exit_code == code
-    assert text in result.output
+    assert text in plain(result.output)
