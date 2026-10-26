@@ -79,3 +79,12 @@ class SparkSettings(_Base):
     driver_memory: str = "1g"
     ivy_dir: str | None = None
     checkpoint_root: Path = Path("/checkpoints")
+
+
+class TrinoSettings(_Base):
+    model_config = SettingsConfigDict(env_prefix="TRINO_")
+
+    host: str = "127.0.0.1"
+    port: int = 18080
+    user: str = "lakestream"
+    catalog: str = "lake"

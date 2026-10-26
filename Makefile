@@ -1,7 +1,9 @@
 SHELL := bash
 .DEFAULT_GOAL := help
+# Git Bash on Windows would rewrite container paths such as /runs/run1.json into Windows paths.
+export MSYS_NO_PATHCONV := 1
 
-.PHONY: help install lint fmt test-fast test-spark test-integration test up down ps logs ui produce lag silver gold maintain
+.PHONY: help install lint fmt test-fast test-spark test-integration test up down ps logs ui produce lag silver gold maintain check demo
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-17s %s\n", $$1, $$2}'
@@ -66,3 +68,10 @@ gold: ## Recompute the gold tables from silver
 MAINTAIN_ARGS ?=
 maintain: ## Compact and expire snapshots (options with MAINTAIN_ARGS="...")
 	$(SPARK_RUN) maintain $(MAINTAIN_ARGS)
+
+MANIFESTS ?= --manifest /runs/run1.json
+check: ## End-to-end check through Trino (manifests with MANIFESTS="--manifest ...")
+	docker compose run --rm --build cli check $(MANIFESTS)
+
+demo: ## Fresh stack, produce, silver, gold, check, maintain, check again
+	bash scripts/demo.sh

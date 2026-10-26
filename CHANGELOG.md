@@ -8,6 +8,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Trino 484 (`trino` service, port 18080) with the Iceberg catalog `lake` over the REST catalog
+  and native S3; part of `make up`. The `cli` service waits for Trino and mounts `/runs`.
+- `lakestream check`: reconciles bronze, the DLQ, rejects, silver and gold with one or more
+  producer manifests through Trino (DLQ from Kafka), with bronze time travel; retries until
+  everything matches or `--timeout`, exits 1 on a mismatch. `make check`.
+- `make demo` (`scripts/demo.sh`): fresh stack, produce with seed 42, lag, silver, gold, check,
+  maintain and check again, printing service status and logs on failure.
+- README with the architecture, quickstart and Trino queries.
 - Docker Compose stack: Kafka (KRaft, single node), Schema Registry with BACKWARD compatibility,
   Kafka UI (profile `ui`), and idempotent init containers for topics and the v1 schema.
 - `lakestream produce`: seeded synthetic shop events (Avro, Confluent wire format) with
