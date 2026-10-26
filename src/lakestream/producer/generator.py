@@ -2,12 +2,12 @@
 
 import random
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from lakestream.contracts import MAX_SPAN_MINUTES, PAYMENT_METHODS, REJECT_REASONS
+from lakestream.contracts import DEVICE_TYPES, MAX_SPAN_MINUTES, PAYMENT_METHODS, REJECT_REASONS
 from lakestream.producer.model import Event, SendItem, SendPlan
 
 DEFAULT_BASE_TIME = datetime(2026, 1, 1, tzinfo=UTC)
@@ -146,6 +146,18 @@ def generate(p: GenParams) -> list[Event]:
             keyed.append((event.event_time, s, seq, event))
     keyed.sort(key=lambda t: t[:3])
     return [t[3] for t in keyed]
+
+
+def with_device_types(events: list[Event], seed: int) -> list[Event]:
+    """Schema v2: one seeded device per session. Its own RNG, so the v1 events stay identical."""
+    rng = random.Random(f"{seed}:device")
+    devices: dict[str, str] = {}
+    out = []
+    for e in events:
+        if e.session_id not in devices:
+            devices[e.session_id] = rng.choice(DEVICE_TYPES)
+        out.append(replace(e, device_type=devices[e.session_id]))
+    return out
 
 
 def _extra_event(rng: random.Random, p: GenParams, kind: str, **over: Any) -> Event:

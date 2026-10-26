@@ -1,8 +1,8 @@
 """End-to-end check: every layer through Trino, the DLQ from Kafka, against the manifests."""
 
 import json
+import sys
 import time
-import uuid
 from collections import Counter
 from collections.abc import Callable, Sequence
 from contextlib import closing
@@ -13,9 +13,10 @@ from typing import Any
 
 import trino.dbapi
 import trino.exceptions
-from confluent_kafka import Consumer, KafkaException, TopicPartition
+from confluent_kafka import KafkaException
 
 from lakestream.contracts import UUID_RE
+from lakestream.ops.dlq_show import read_dlq
 from lakestream.ops.expectations import Expected, build_expected
 from lakestream.settings import KafkaSettings, TrinoSettings
 
@@ -30,6 +31,7 @@ class Check:
     expected: object
     actual: object
     ok: bool
+    skipped: bool = False  # nothing to compare; never fails the run
 
 
 def _eq(name: str, expected: object, actual: object) -> Check:
@@ -47,50 +49,17 @@ def _set_check(name: str, expected: set[Any], actual: list[Any]) -> Check:
 
 def dlq_coordinates(kafka: KafkaSettings, timeout: float = 30) -> set[tuple[int, int]]:
     """Distinct original (partition, offset) of the DLQ records for the source topic."""
-    consumer = Consumer(
-        {
-            "bootstrap.servers": kafka.bootstrap_servers,
-            "group.id": f"check-{uuid.uuid4().hex}",
-            "enable.auto.commit": False,
-        }
-    )
-    try:
-        meta = consumer.list_topics(kafka.dlq_topic, timeout=timeout).topics[kafka.dlq_topic]
-        if meta.error is not None:
-            raise KafkaException(meta.error)
-        ends: dict[int, int] = {}
-        starts = []
-        for p in meta.partitions:
-            low, high = consumer.get_watermark_offsets(
-                TopicPartition(kafka.dlq_topic, p), timeout=timeout
-            )
-            if high > low:
-                ends[p] = high
-                starts.append(TopicPartition(kafka.dlq_topic, p, low))
-        consumer.assign(starts)
-        found: set[tuple[int, int]] = set()
-        deadline = time.monotonic() + timeout
-        while ends and time.monotonic() < deadline:
-            msg = consumer.poll(1.0)
-            if msg is None or msg.error():
-                continue
-            raw = msg.headers() or []
-            pairs = raw.items() if isinstance(raw, dict) else raw
-            headers = {k: v.decode() if isinstance(v, bytes) else v for k, v in pairs}
-            if headers.get("dlq.original.topic") == kafka.topic:
-                found.add(
-                    (
-                        int(headers["dlq.original.partition"] or -1),
-                        int(headers["dlq.original.offset"] or -1),
-                    )
+    found: set[tuple[int, int]] = set()
+    for rec in read_dlq(kafka, limit=sys.maxsize, timeout=timeout):
+        headers = {k: (v or b"").decode() for k, v in rec.headers}
+        if headers.get("dlq.original.topic") == kafka.topic:
+            found.add(
+                (
+                    int(headers.get("dlq.original.partition") or -1),
+                    int(headers.get("dlq.original.offset") or -1),
                 )
-            if (msg.offset() or 0) + 1 >= ends.get(msg.partition() or 0, 0):
-                ends.pop(msg.partition() or 0, None)
-        if ends:
-            raise KafkaException(f"DLQ not read to the end within {timeout}s: {ends}")
-        return found
-    finally:
-        consumer.close()
+            )
+    return found
 
 
 def first_append_snapshot(q: Query) -> int | None:
@@ -113,6 +82,7 @@ def run_checks(exp: Expected, q: Query, dlq: set[tuple[int, int]]) -> list[Check
     rejects = Counter(dict(q("SELECT reject_reason, count(*) FROM silver.rejects GROUP BY 1")))
     silver, silver_distinct = q("SELECT count(*), count(DISTINCT event_id) FROM silver.events")[0]
     by_type = Counter(dict(q("SELECT event_type, count(*) FROM silver.events GROUP BY 1")))
+    devices = q("SELECT count(device_type) FROM silver.events")[0][0]
     # Only canonical UUIDs are inlined into the SQL; anything else counts as missing.
     late_ids = ", ".join(f"'{i}'" for i in sorted(exp.late_event_ids) if UUID_RE.fullmatch(i))
     late_sql = f"SELECT count(DISTINCT event_id) FROM silver.events WHERE event_id IN ({late_ids})"
@@ -143,6 +113,7 @@ def run_checks(exp: Expected, q: Query, dlq: set[tuple[int, int]]) -> list[Check
         _eq("silver rows", exp.silver_rows, silver),
         _eq("silver distinct event_id", exp.silver_rows, silver_distinct),
         _eq("silver per type", dict(exp.events_by_type), dict(by_type)),
+        _eq("silver rows with device_type (v2 runs)", exp.device_type_events, devices),
         _eq("silver late ids present", len(exp.late_event_ids), present),
         _eq("silver last run rows_dropped_late", 0, dropped[0][0] if dropped else None),
         _set_check("gold events_per_minute rows", expected_minutes, minutes),
@@ -167,13 +138,45 @@ def time_travel(q: Query) -> Check:
     return Check(name, f"<= {current}", first, first is not None and first <= current)
 
 
+def gold_time_travel(q: Query) -> Check:
+    """gold.events_per_minute at the snapshot of the previous gold run next to now.
+
+    Called with two or more manifests. No gold snapshot with a `run_id` fails: the gold writer
+    did not tag its commits. Exactly one is a labelled skip (gold ran once after every manifest,
+    or maintenance expired the earlier run's snapshot); the other gold checks still catch wrong
+    data.
+    """
+    current = q("SELECT sum(event_count) FROM gold.events_per_minute")[0][0]
+    runs = q(
+        'SELECT snapshot_id FROM gold."events_per_minute$snapshots"'
+        " WHERE element_at(summary, 'run_id') IS NOT NULL ORDER BY committed_at DESC LIMIT 2"
+    )
+    if not runs:
+        name = "gold time travel: gold snapshots carrying a run_id"
+        return Check(name, ">= 1", 0, ok=False)
+    if len(runs) == 1:
+        reason = "1 gold snapshot with a run_id, no earlier gold run to compare"
+        return Check(f"gold time travel skipped: {reason}", "-", current, ok=True, skipped=True)
+    snapshot = int(runs[1][0])
+    earlier = q(
+        f"SELECT sum(event_count) FROM gold.events_per_minute FOR VERSION AS OF {snapshot}"
+    )[0][0]
+    name = f"gold time travel: events at the previous gold run (snapshot {snapshot}) <= current"
+    ok = earlier is not None and current is not None and earlier <= current
+    return Check(name, f"<= {current}", earlier, ok)
+
+
 def render(checks: Sequence[Check]) -> str:
     lines = []
     for c in checks:
-        mark = "ok  " if c.ok else "FAIL"
+        mark = "skip" if c.skipped else "ok  " if c.ok else "FAIL"
         lines.append(f"{mark} {c.name}: expected {c.expected}, actual {c.actual}")
     failed = sum(not c.ok for c in checks)
-    lines.append(f"{len(checks) - failed}/{len(checks)} checks passed")
+    skipped = sum(c.skipped for c in checks)
+    lines.append(
+        f"{len(checks) - failed - skipped}/{len(checks) - skipped} checks passed"
+        + (f", {skipped} skipped" if skipped else "")
+    )
     return "\n".join(lines)
 
 
@@ -193,6 +196,8 @@ def _attempt(
         checks = run_checks(exp, q, dlq_coordinates(kafka))
         if with_time_travel:
             checks.append(time_travel(q))
+            if exp.manifests >= 2:  # one gold run per producer run
+                checks.append(gold_time_travel(q))
         return checks
 
 

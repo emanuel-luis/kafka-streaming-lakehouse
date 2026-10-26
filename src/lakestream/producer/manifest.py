@@ -60,6 +60,7 @@ def build_manifest(
         "invalid": {"total": invalid, "by_reason": dict(plan.invalid_by_reason)},
         "malformed_by_kind": dict(plan.malformed_by_kind),
         "events_by_type": dict(sorted(Counter(e.event_type for e in plan.clean).items())),
+        "device_type_events": sum(e.device_type is not None for e in plan.clean),
         "sessions": sessions,
         "orders_placed": sum(e.event_type == "order_placed" for e in plan.clean),
         "payments_approved": len(approved),
