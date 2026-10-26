@@ -37,9 +37,10 @@ check_both() { # check_both <step>: the check over both manifests, which must ti
   step=$1 logs_of=trino
   echo
   echo "==> ${step}"
-  # tee keeps the output visible while the check retries; pipefail keeps its exit code
+  # tee keeps the output visible while the check retries; pipefail keeps its exit code. It writes
+  # to the inherited stderr through cat: `tee /dev/stderr` reopens a redirected log and truncates it.
   if ! out=$(docker compose run --rm cli check --manifest "${RUN1}" --manifest "${RUN2}" 2>&1 |
-    tee /dev/stderr); then
+    tee >(cat >&2)); then
     false
   fi
   # Gold runs after each produce and maintenance keeps both snapshots: a skip here is a bug.
