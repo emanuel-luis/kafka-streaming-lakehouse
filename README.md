@@ -1,5 +1,7 @@
 # kafka-streaming-lakehouse
 
+[![ci](https://github.com/emanuel-luis/kafka-streaming-lakehouse/actions/workflows/ci.yml/badge.svg)](https://github.com/emanuel-luis/kafka-streaming-lakehouse/actions/workflows/ci.yml)
+
 > Kafka end to end on a laptop: Python producers and consumers with Avro and Schema Registry,
 > landing events in an Apache Iceberg lakehouse (bronze, silver, gold) that Trino queries.
 
@@ -243,8 +245,8 @@ docker compose run --rm cli dlq --limit 10
 ## Status
 
 The project ships in phases, one pull request each: compose and producer, consumer and bronze,
-Spark silver and gold, Trino and the end-to-end check, schema evolution with the DLQ command
-(this one). Still to come: CI.
+Spark silver and gold, Trino and the end-to-end check, schema evolution with the DLQ command,
+and CI (lint, unit, Spark and end-to-end jobs, plus a weekly dependency audit).
 
 ## Related
 

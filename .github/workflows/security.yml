@@ -1,0 +1,29 @@
+name: security
+
+on:
+  pull_request:
+    paths: [pyproject.toml, uv.lock, .github/workflows/security.yml]
+  workflow_dispatch:
+  schedule:
+    - cron: "0 7 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pip-audit:
+    name: pip-audit (locked dependencies)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with: { persist-credentials: false }
+      - uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with: { enable-cache: true }
+      # hashes come with the export, so pip-audit audits exactly the locked files and skips pip
+      - run: uv export --frozen --all-extras --no-emit-project --format requirements-txt -o "$RUNNER_TEMP/requirements.txt"
+      - run: uvx pip-audit --disable-pip -r "$RUNNER_TEMP/requirements.txt"

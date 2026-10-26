@@ -20,6 +20,9 @@ All notable changes to this project are documented here. The format follows
 - `lakestream check` reconciles `device_type` against the v2 manifests and, with two or more
   manifests, reads gold at the previous gold run's snapshot.
 - `make demo` runs a second, schema v2 producer run and checks both manifests.
+- GitHub Actions: `ci.yml` (lint, then unit, Spark with Java 17 and an end-to-end job that runs
+  `make demo` and `make test-integration`), `security.yml` (pip-audit over the locked
+  dependencies) and weekly grouped Dependabot updates for actions and uv. Actions are pinned by SHA.
 - Trino 484 (`trino` service, port 18080) with the Iceberg catalog `lake` over the REST catalog
   and native S3; part of `make up`. The `cli` service waits for Trino and mounts `/runs`.
 - `lakestream check`: reconciles bronze, the DLQ, rejects, silver and gold with one or more

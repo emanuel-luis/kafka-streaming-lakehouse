@@ -1,0 +1,14 @@
+# Weekly update PRs, one per ecosystem: the SHA-pinned actions and uv.lock.
+# Docker images are left out on purpose: their pins move with docs/PLAN.md and docs/DECISIONS.md.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      github-actions: { patterns: ["*"] }
+  - package-ecosystem: uv
+    directory: /
+    schedule: { interval: weekly }
+    groups:
+      uv: { patterns: ["*"] }
