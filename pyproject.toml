@@ -1,0 +1,54 @@
+[project]
+name = "kafka-streaming-lakehouse"
+version = "0.1.0"
+description = "Kafka to Apache Iceberg lakehouse on a laptop: Avro, Schema Registry, bronze, silver, gold."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Emanuel Luis" }]
+dependencies = [
+    "confluent-kafka[avro,schemaregistry]==2.16.0",
+    "pydantic-settings>=2.16.1",
+    "typer>=0.27.3",
+]
+
+[project.scripts]
+lakestream = "lakestream.cli:app"
+
+[build-system]
+requires = ["uv_build>=0.9,<0.10"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "lakestream"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+extend-select = ["BLE", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+files = ["src"]
+strict = true
+enable_error_code = ["ignore-without-code"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["-ra", "--strict-markers", "--strict-config", "-m", "not spark and not integration"]
+timeout = 300
+markers = [
+  "spark: needs a local Spark session (run in WSL or CI)",
+  "integration: needs the compose stack up on localhost",
+]
+
+[dependency-groups]
+dev = [
+    "hypothesis>=6.170.9",
+    "mypy>=2.4.0",
+    "pytest>=9.1.1",
+    "pytest-timeout>=2.4.0",
+    "ruff>=0.17.2",
+]
