@@ -91,3 +91,71 @@ def produce(
     )
     if code:
         raise typer.Exit(code)
+
+
+@app.command()
+def consume(
+    group: Annotated[str | None, typer.Option(help="Consumer group [bronze-ingest].")] = None,
+    exit_when_idle: Annotated[
+        float | None,
+        typer.Option(min=0, help="Flush and exit 0 after this many idle seconds [run forever]."),
+    ] = None,
+    crash_after_write_batch: Annotated[
+        int | None, typer.Option(min=1, hidden=True, help="Test hook: die after the Nth append.")
+    ] = None,
+) -> None:
+    """Land shop.events in the bronze Iceberg table; undecodable records go to the DLQ."""
+    from lakestream.consumer.run import run_consume
+    from lakestream.logging import configure_logging
+    from lakestream.runmeta import get_run_id
+    from lakestream.settings import (
+        ConsumerSettings,
+        IcebergSettings,
+        KafkaSettings,
+        S3Settings,
+        SchemaRegistrySettings,
+    )
+
+    run_id = get_run_id()
+    configure_logging(run_id)
+    cfg = ConsumerSettings()
+    if group:
+        cfg = cfg.model_copy(update={"group_id": group})
+    code = run_consume(
+        kafka=KafkaSettings(),
+        registry_url=SchemaRegistrySettings().url,
+        iceberg=IcebergSettings(),
+        s3=S3Settings(),
+        cfg=cfg,
+        run_id=run_id,
+        exit_when_idle=exit_when_idle,
+        crash_after_write_batch=crash_after_write_batch,
+    )
+    if code:
+        raise typer.Exit(code)
+
+
+@app.command()
+def lag(
+    group: Annotated[str | None, typer.Option(help="Consumer group [bronze-ingest].")] = None,
+    wait: Annotated[
+        bool, typer.Option(help="Poll until total lag is 0 and every partition is committed.")
+    ] = False,
+    timeout: Annotated[float, typer.Option(help="Seconds to wait with --wait [300].")] = 300,
+    as_json: Annotated[bool, typer.Option("--json", help="Print JSON.")] = False,
+) -> None:
+    """Per partition: committed offset, end offset, lag and owner. Exit 1 if --wait times out."""
+    from lakestream.ops.lag import run_lag
+    from lakestream.settings import ConsumerSettings, KafkaSettings
+
+    kafka = KafkaSettings()
+    code = run_lag(
+        bootstrap_servers=kafka.bootstrap_servers,
+        group=group or ConsumerSettings().group_id,
+        topic=kafka.topic,
+        wait=wait,
+        timeout=timeout,
+        as_json=as_json,
+    )
+    if code:
+        raise typer.Exit(code)

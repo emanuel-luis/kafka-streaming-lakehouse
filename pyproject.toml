@@ -10,6 +10,7 @@ authors = [{ name = "Emanuel Luis" }]
 dependencies = [
     "confluent-kafka[avro,schemaregistry]==2.16.0",
     "pydantic-settings>=2.16.1",
+    "pyiceberg[pyarrow,pyiceberg-core]==0.12.0",
     "typer>=0.27.3",
 ]
 
@@ -35,6 +36,10 @@ files = ["src"]
 strict = true
 enable_error_code = ["ignore-without-code"]
 
+[[tool.mypy.overrides]]
+module = ["pyarrow.*"]
+ignore_missing_imports = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["-ra", "--strict-markers", "--strict-config", "-m", "not spark and not integration"]
@@ -51,4 +56,5 @@ dev = [
     "pytest>=9.1.1",
     "pytest-timeout>=2.4.0",
     "ruff>=0.17.2",
+    "sqlalchemy>=2.0.44",
 ]

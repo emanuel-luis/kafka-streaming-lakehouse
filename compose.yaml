@@ -1,8 +1,8 @@
-# Memory limits for the phase 1 stack (target total under 2 GB):
-#   kafka 1g (heap 512m) | schema-registry 512m (heap 256m) = 1.5 GB long-running.
-#   On demand: kafka-ui 512m (profile ui), producer 256m (profile tools); one-shot init
-#   containers: kafka-init 384m, schema-init 256m. Later phases add s3, iceberg-rest, consumer,
-#   trino, spark-job and cli (about 4.7 GB with everything long-running up, see docs/PLAN.md).
+# Memory limits (full stack, see docs/PLAN.md for the whole table):
+#   long-running: kafka 1g (heap 512m) | schema-registry 512m (heap 256m) | s3 512m |
+#   iceberg-rest 384m (heap 192m) | consumer 2 x 384m = 3.2 GB so far (trino and spark-job come later).
+#   On demand: kafka-ui 512m (profile ui); producer 256m and cli 256m (profile tools).
+#   One-shot init containers: kafka-init 384m, schema-init 256m, s3-init 64m.
 name: kafka-streaming-lakehouse
 
 x-app-env: &app-env
@@ -11,6 +11,14 @@ x-app-env: &app-env
   SCHEMA_REGISTRY_URL: http://schema-registry:8081
   KAFKA_TOPIC: ${KAFKA_TOPIC:-shop.events}
   KAFKA_DLQ_TOPIC: ${KAFKA_DLQ_TOPIC:-shop.events.dlq}
+  S3_ENDPOINT: http://s3:9000
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY:-lake_admin}
+  S3_SECRET_KEY: ${S3_SECRET_KEY:-lake_secret_pw}
+  S3_REGION: ${S3_REGION:-us-east-1}
+  S3_BUCKET: ${S3_BUCKET:-lakehouse}
+  ICEBERG_REST_URI: http://iceberg-rest:8181
+  ICEBERG_WAREHOUSE: ${ICEBERG_WAREHOUSE:-s3://lakehouse/warehouse}
+  ICEBERG_CATALOG: ${ICEBERG_CATALOG:-lake}
 
 x-app-build: &app-build
   context: .
@@ -109,6 +117,121 @@ services:
     restart: "no"
     networks: [lake]
 
+  s3:
+    image: rustfs/rustfs:1.0.3
+    mem_limit: 512m
+    environment:
+      RUSTFS_ACCESS_KEY: ${S3_ACCESS_KEY:-lake_admin}
+      RUSTFS_SECRET_KEY: ${S3_SECRET_KEY:-lake_secret_pw}
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
+    ports:
+      - "127.0.0.1:${S3_API_PORT:-19000}:9000"
+      - "127.0.0.1:${S3_CONSOLE_PORT:-19001}:9001"
+    volumes:
+      - s3_data:/data
+    healthcheck:
+      # The image ships curl and answers 200 on /health (checked against 1.0.3).
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9000/health >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    networks: [lake]
+
+  s3-init:
+    image: curlimages/curl:8.23.0
+    mem_limit: 64m
+    depends_on:
+      s3:
+        condition: service_healthy
+    entrypoint: ["sh", "/scripts/create-bucket.sh"]
+    environment:
+      S3_ENDPOINT: http://s3:9000
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-lake_admin}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-lake_secret_pw}
+      S3_REGION: ${S3_REGION:-us-east-1}
+      S3_BUCKET: ${S3_BUCKET:-lakehouse}
+    volumes:
+      - ./scripts/create-bucket.sh:/scripts/create-bucket.sh:ro
+    restart: "no"
+    networks: [lake]
+
+  iceberg-rest:
+    # Pinned by digest (docs/DECISIONS.md 10). Env vars CATALOG_* become catalog properties:
+    # "__" -> "-", "_" -> ".", lower-cased (RCKUtils.environmentCatalogConfig in apache/iceberg).
+    image: apache/iceberg-rest-fixture@sha256:db8de90b5b7693d4ac334c336f91d9bbe320d7b19f4f514d26de84cdfbcbfe8d
+    mem_limit: 384m
+    depends_on:
+      s3-init:
+        condition: service_completed_successfully
+    environment:
+      # The image runs as uid 1000 and /data does not exist in it, so a fresh volume there is
+      # root-owned and read-only for the catalog. /home/iceberg is owned by that user and a new
+      # named volume inherits its ownership.
+      CATALOG_URI: jdbc:sqlite:/home/iceberg/iceberg_catalog.db?journal_mode=WAL
+      CATALOG_WAREHOUSE: ${ICEBERG_WAREHOUSE:-s3://lakehouse/warehouse}
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://s3:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      CATALOG_S3_ACCESS__KEY__ID: ${S3_ACCESS_KEY:-lake_admin}
+      CATALOG_S3_SECRET__ACCESS__KEY: ${S3_SECRET_KEY:-lake_secret_pw}
+      CATALOG_CLIENT_REGION: ${S3_REGION:-us-east-1}
+      AWS_REGION: ${S3_REGION:-us-east-1}
+      AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+      AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+      JAVA_TOOL_OPTIONS: -Xms64m -Xmx192m
+    ports:
+      - "127.0.0.1:${ICEBERG_REST_PORT:-18181}:8181"
+    volumes:
+      - catalog_data:/home/iceberg
+    healthcheck:
+      # The image ships curl (checked on the pinned digest).
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8181/v1/config >/dev/null"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+    networks: [lake]
+
+  consumer:
+    build: *app-build
+    image: lakestream-app:local
+    mem_limit: 384m
+    command: ["consume"]
+    deploy:
+      replicas: 2
+    restart: on-failure
+    stop_grace_period: 30s
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      schema-init:
+        condition: service_completed_successfully
+      iceberg-rest:
+        condition: service_healthy
+    environment:
+      <<: *app-env
+      CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID:-bronze-ingest}
+      CONSUMER_BATCH_MAX_MESSAGES: ${CONSUMER_BATCH_MAX_MESSAGES:-2000}
+      CONSUMER_BATCH_MAX_SECONDS: ${CONSUMER_BATCH_MAX_SECONDS:-5}
+      CONSUMER_WRITE_RETRIES: ${CONSUMER_WRITE_RETRIES:-5}
+      CONSUMER_BRONZE_TABLE: ${CONSUMER_BRONZE_TABLE:-bronze.events}
+      CONSUMER_HEARTBEAT_FILE: /tmp/consumer-heartbeat
+    healthcheck:
+      # The image has Python and no curl: healthy while the heartbeat file is under 60 s old.
+      test:
+        - CMD
+        - python
+        - -c
+        - import os,sys,time; sys.exit(0 if time.time()-os.path.getmtime('/tmp/consumer-heartbeat')<60 else 1)
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    networks: [lake]
+
   producer:
     build: *app-build
     image: lakestream-app:local
@@ -137,6 +260,19 @@ services:
       - demo_runs:/runs
     networks: [lake]
 
+  cli:
+    build: *app-build
+    image: lakestream-app:local
+    mem_limit: 256m
+    profiles: [tools]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      <<: *app-env
+      CONSUMER_GROUP_ID: ${CONSUMER_GROUP_ID:-bronze-ingest}
+    networks: [lake]
+
   kafka-ui:
     image: ghcr.io/kafbat/kafka-ui:v1.5.0
     mem_limit: 512m
@@ -161,4 +297,6 @@ networks:
 
 volumes:
   kafka_data:
+  s3_data:
+  catalog_data:
   demo_runs:

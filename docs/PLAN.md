@@ -168,7 +168,8 @@ Every append carries these snapshot summary properties:
    `group.protocol=classic` (KIP-848 is a possible follow-up).
 2. Loop: `consume(num_messages, timeout)` accumulates records until
    `CONSUMER_BATCH_MAX_MESSAGES` (2000) or `CONSUMER_BATCH_MAX_SECONDS` (5). The consumer touches
-   its heartbeat file on every iteration.
+   its heartbeat file on every iteration. Each poll asks for at most the room left in the batch,
+   so `CONSUMER_BATCH_MAX_MESSAGES` is a hard cap, not a soft limit.
 3. Decode: parse the 5-byte header (magic byte 0 plus schema id) before deserializing. A frame
    that is not Avro, a schema id the registry answers 404 for, a fastavro decode error or a null
    value goes to the DLQ. A registry connection error or 5xx is transient and triggers a batch
@@ -182,9 +183,16 @@ Every append carries these snapshot summary properties:
 5. Idempotency across a crash between append and commit: in `on_assign`, for each partition,
    `resume = max(committed, last_written + 1)`. `last_written` comes from walking `ingest.offsets`
    in bronze snapshots, newest first, filtered to this group and topic, skipping non-append
-   snapshots. Set `tp.offset` and call `incremental_assign`. Kafka offsets alone cannot make this
-   safe because the Kafka commit is a separate step from the Iceberg commit; the snapshot summary
-   commits atomically with the data, so the table itself says what it holds.
+   snapshots. Set `tp.offset` and call `incremental_assign`. When the resume point is ahead of the
+   Kafka commit, the main loop commits it once right after the assignment, so the group's lag is
+   truthful even if the partition never receives another record. Kafka offsets alone cannot make
+   this safe because the Kafka commit is a separate step from the Iceberg commit; the snapshot summary
+   commits atomically with the data, so the table itself says what it holds. The append also
+   fences stale writers (decision 21): on every attempt, after the refresh, it raises
+   `OffsetFenceError` when the group already wrote an offset at or past the batch's first one, and
+   the consumer exits without committing. This holds because bronze sets
+   `commit.retry.num-retries=0` (`ensure_table` also sets it on an existing table), so every 409
+   reaches the consumer's own refresh-and-check loop instead of PyIceberg's internal retry.
 6. `on_revoke` drops the buffered records of revoked partitions (never written or committed, so
    the new owner reads them again). Appends and commits happen between polls and rebalance
    callbacks run only inside polls, so a batch's append and commit never straddle a rebalance.

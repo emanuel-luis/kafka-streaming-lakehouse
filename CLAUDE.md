@@ -11,7 +11,9 @@ portfolio repo; all data is synthetic.
 - `make lint`: ruff check, ruff format --check, mypy strict on `src` (same as the CI lint job).
 - `make test-fast`: pytest with the default selection (deselects `spark` and `integration`).
 - `make test-integration`: tests against the running compose stack (`make up` first).
-- `make up` / `make down`: start the stack (healthchecks, `--wait`) / remove it with its volumes.
+- `make up` / `make down`: start the stack (healthchecks, `--wait`; the consumer pulls in every init
+  job) / remove it with its volumes and every profile.
+- `make lag`: `lag --wait` in the `cli` container (profile `tools`): the consumer group has caught up.
 - `make produce`: run the producer once inside the stack; the manifest lands in `/runs`.
 - `make ui`: Kafbat UI on http://localhost:18090 (profile `ui`).
 - Spark tests and jobs never run in Windows Python. On the owner's machine:
@@ -22,6 +24,9 @@ portfolio repo; all data is synthetic.
 - `docs/PLAN.md`: the contract (topics, Avro schema, tables, env vars, CLI, compose services,
   phases). `docs/DECISIONS.md`: decision log with reasons.
 - `compose.yaml`: the stack; project name `kafka-streaming-lakehouse`; host ports from `.env`.
+- `scripts/create-bucket.sh`: bucket creation run by `s3-init`. Services added in phase 2: `s3`
+  (RustFS, ports 19000/19001), `iceberg-rest` (fixture, SQLite WAL on `catalog_data`, port 18181),
+  `consumer` (2 replicas) and `cli` (profile `tools`).
 - `docker/app.Dockerfile`: `app` target (no JVM); phase 3 adds the `spark` target.
 - `scripts/create-topics.sh`: topic creation run by `kafka-init`.
 - `src/lakestream/`: `cli.py` (Typer, single entry point), `settings.py`, `logging.py`,
