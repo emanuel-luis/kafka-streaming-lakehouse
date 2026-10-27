@@ -18,9 +18,17 @@ portfolio repo; all data is synthetic.
 - `make ui`: Kafbat UI on http://localhost:18090 (profile `ui`).
 - `make silver` / `make gold` / `make maintain`: Spark jobs in the `spark-job` container.
 - `make check`: `lakestream check` in the `cli` container (`MANIFESTS="--manifest /runs/run1.json"`).
+- `make d2-install`: installs the pinned D2 (`D2_VERSION`, sha256-checked `D2_SHA256`, Linux
+  x86_64) into `~/.local/share/d2/v<version>`. `make diagrams`: renders every `docs/diagrams/*.d2`
+  (not `_*.d2`) to SVG. `make diagrams-check`: renders, then fails on a stale, missing or orphan
+  SVG; exactly what the CI `diagrams` job runs. `make diagrams-watch NAME=<name>`: `d2 --watch`
+  live preview; `NAME` is read only from the command line (WSL exports `NAME` as the hostname).
+  On the owner's machine render through WSL:
+  `wsl -d Ubuntu -e bash -lc 'cd /mnt/d/dev/Pessoal/kafka-streaming-lakehouse && make diagrams'`.
 - CI (`.github/workflows/ci.yml`): `lint` gates `test-fast`, `test-spark` and `e2e` (`make demo`,
-  `make test-integration`, `make down`); `UV_LOCKED=1`; actions pinned by SHA. `security.yml` runs
-  pip-audit; Dependabot covers actions and uv, not Docker images.
+  `make test-integration`, `make down`); `diagrams` (`make d2-install`, `make diagrams-check`, SVGs
+  uploaded as an artifact) runs on its own; `UV_LOCKED=1`; actions pinned by SHA. `security.yml`
+  runs pip-audit; Dependabot covers actions and uv, not Docker images.
 - `make demo`: `scripts/demo.sh`, the whole run from fresh volumes (a stack run: heavy lock): run 1
   with schema v1, then v2, the rejected v2-breaking check and run 2, then maintain.
 - Spark tests and jobs never run in Windows Python. On the owner's machine:
@@ -30,6 +38,11 @@ portfolio repo; all data is synthetic.
 
 - `docs/PLAN.md`: the contract (topics, Avro schema, tables, env vars, CLI, compose services,
   phases). `docs/DECISIONS.md`: decision log with reasons.
+- `docs/diagrams/`: D2 sources and their committed SVGs: `architecture`, `data-flow`,
+  `data-model` (every Iceberg table, keys and partitions), `user-flows-event-lifecycle`,
+  `user-flows-schema-evolution`, `user-flows-make-demo`, `user-flows-consumer-restart`.
+  `_style.d2` (a copy of the portfolio pilot's) holds the `d2-config` (ELK, theme 0 plus dark
+  theme 200, pad, color overrides) and the classes every diagram uses.
 - `compose.yaml`: the stack; project name `kafka-streaming-lakehouse`; host ports from `.env`.
 - `scripts/create-bucket.sh`: bucket creation run by `s3-init`. Services added in phase 2: `s3`
   (RustFS, ports 19000/19001), `iceberg-rest` (fixture, SQLite WAL on `catalog_data`, port 18181),
@@ -74,3 +87,12 @@ portfolio repo; all data is synthetic.
   (`D:/dev/Pessoal/.locks/heavy`) and end with `make down`.
 - Host ports default to the 1xxxx range so the stack can run next to `cdc-streaming-demo`.
 - No employer names, hosts or identifiers anywhere in this repo.
+- Diagrams are D2 only (no Mermaid). Each `.d2` starts with `...@_style`, uses its classes
+  (`process`, `source`, `store`, `serving`, `actor`, `external`, `check`; `meta` for dashed edges)
+  and never sets a fill color: explicit colors do not switch in dark mode. Legends are hand-made
+  containers (`class: legend`). ELK turns every edge label into a layer, so keep text in node
+  labels and edges top-down; move a container label (`label.near`) when an edge crosses it. About
+  25 nodes and 1,300 px wide at most: GitHub scales images down to its ~980 px column. A diagram
+  names only what the code has; when a contract changes in `docs/PLAN.md`, update the diagrams in
+  the same PR. Commit the `.d2` and the `.svg` together; never edit an SVG by hand, and edit `.d2`
+  files with an editor, not `sed` (it mangles `\n` inside D2 strings).
