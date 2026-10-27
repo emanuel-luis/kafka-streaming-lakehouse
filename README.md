@@ -58,28 +58,25 @@ the producer says it sent.
 
 ## Architecture
 
-```mermaid
-flowchart LR
-  P[producer<br/>Python, Avro] --> K[(Kafka<br/>shop.events)]
-  SR[Schema Registry] -.schemas.- P
-  K --> C[consumer x2<br/>Python, PyIceberg]
-  C -->|undecodable| D[(shop.events.dlq)]
-  C --> B[(bronze.events)]
-  B --> S[Spark Structured Streaming]
-  S --> SE[(silver.events)]
-  S --> SJ[(silver.rejects)]
-  SE --> G[Spark batch]
-  G --> GT[(gold tables)]
-  T[Trino] --> B & SE & SJ & GT
-  subgraph Storage
-    REST[Iceberg REST catalog]
-    S3[S3-compatible object storage]
-  end
-```
+![Architecture: an operator or the CI e2e job runs make demo against one docker compose stack. The producer sends Avro events keyed by user_id to shop.events in Kafka (KRaft) and looks up schema ids in the Schema Registry (BACKWARD); two consumer replicas send undecodable records to shop.events.dlq, append bronze to the Iceberg REST catalog and RustFS storage, then commit their offsets; spark-job runs silver, gold and maintenance on the same tables, which Trino serves; the cli runs lag, check, dlq and register-schemas](docs/diagrams/architecture.svg)
+
+Source: [architecture.d2](docs/diagrams/architecture.d2).
 
 All tables are Iceberg on S3-compatible object storage (RustFS) behind an Iceberg REST catalog,
 and everything runs in Docker Compose. Design notes are in [docs/PLAN.md](docs/PLAN.md) and the
 reasons behind each choice in [docs/DECISIONS.md](docs/DECISIONS.md).
+
+### Data flow
+
+![Data flow: the seeded producer writes shop.events and a run manifest; the consumer group decodes each record with its writer schema, sends undecodable ones to the DLQ, appends bronze with its Kafka offsets in the snapshot summary and only then commits the offsets, with an offset fence on every append; the silver stream sends contract violations to silver.rejects and deduplicates event_id within a 3-hour watermark into silver.events, keeping checkpoints that also clamp maintenance; gold recomputes three tables from one silver snapshot; silver and gold runs log to ops.job_runs; lakestream check compares every layer and the DLQ with the manifests through Trino](docs/diagrams/data-flow.svg)
+
+Source: [data-flow.d2](docs/diagrams/data-flow.d2).
+
+### An event's lifecycle
+
+![Sequence of one event: the producer looks up the schema id and sends the record keyed by user_id; the consumer reads the header and the writer schema, sends an undecodable record with its coordinates to the DLQ and flushes, retries a failing step with backoff on a transient error, appends the batch to bronze with its offsets and then commits them; spark-job reads the new bronze snapshots, validates and deduplicates into silver and recomputes gold; Trino queries the tables](docs/diagrams/user-flows-event-lifecycle.svg)
+
+Source: [user-flows-event-lifecycle.d2](docs/diagrams/user-flows-event-lifecycle.d2).
 
 ## Tech stack
 
@@ -102,6 +99,7 @@ src/lakestream/
   ops/                  lag, DLQ viewer, expectations from manifests, end-to-end check
 tests/                  unit, spark (WSL/CI), integration (compose stack)
 docs/                   PLAN.md (contracts), DECISIONS.md (why)
+docs/diagrams/          D2 diagram sources, the shared _style.d2 and the rendered SVGs
 ```
 
 ## Quickstart
@@ -133,8 +131,19 @@ make demo
    snapshot) and `dlq --limit 3`;
 8. `maintain` (compaction, manifest rewrite, snapshot expiry), then the same check again.
 
+![Sequence of make demo: demo.sh recreates the stack from fresh volumes, runs the producer with seed 42, waits for lag, runs silver and gold and checks run 1 through Trino; registers schema v2 and checks that the registry rejects the breaking one; runs the producer with seed 43 and schema v2, then lag, silver, gold, the check over both manifests with gold time travel, and dlq; then maintain and the check again; CI follows with make test-integration and make down](docs/diagrams/user-flows-make-demo.svg)
+
+Source: [user-flows-make-demo.d2](docs/diagrams/user-flows-make-demo.d2).
+
 Event time comes from a fixed synthetic base, so the same seed gives the same gold tables on
 every run. When you are done, `make down` removes the stack and its volumes.
+
+## Data model
+
+![Data model: bronze.events (the Avro fields, Kafka coordinates as the key, partitioned by day of ingested_at, device_type added by v2) feeds silver.events (key event_id, partitioned by day of event_time) and silver.rejects (partitioned by day of processed_at); silver.events feeds gold.events_per_minute, gold.revenue_5min and gold.user_sessions, each keyed by its window and grouping column; ops.job_runs logs every silver and gold run](docs/diagrams/data-model.svg)
+
+Source: [data-model.d2](docs/diagrams/data-model.d2). Iceberg has no key constraints: "key" marks
+the logical key of each table, and the check asserts the bronze and silver ones.
 
 ## Query it
 
@@ -226,6 +235,29 @@ so it can run at any time.
 docker compose run --rm cli dlq --limit 10
 ```
 
+## Schema evolution
+
+Between the two runs, `make demo` registers `ShopEvent` v2, which adds an optional `device_type`,
+and checks that the registry rejects a schema with a new required field. The consumer adds the
+column to bronze before it appends a v2 record. `silver.events` has the column from its creation
+(null while bronze has none), so the next silver run reads it with the same checkpoints; only a
+`silver.events` created before v2 gets an `ALTER TABLE ... ADD COLUMN`.
+
+![Sequence of the schema evolution: register-schemas sets BACKWARD, tests v2 and registers it; the registry rejects the breaking schema, which adds a required field with no default; the producer sends v2 events; the consumer fetches the new writer schema, adds device_type to bronze with union_by_name and appends, v1 rows reading null; the next available-now silver run reads the evolved bronze with its checkpoints into silver.events, which has device_type from its creation, and only an older silver.events gets an ALTER TABLE](docs/diagrams/user-flows-schema-evolution.svg)
+
+Source: [user-flows-schema-evolution.d2](docs/diagrams/user-flows-schema-evolution.d2).
+
+## Consumer restarts
+
+A consumer that dies after its bronze append and before its offset commit loses nothing and writes
+nothing twice: the next owner of the partitions resumes at max(committed offset, last offset in
+bronze + 1). The integration tests make a consumer exit at that point with the hidden
+`--crash-after-write-batch` option, restart it and assert that no Kafka coordinate is duplicated.
+
+![Sequence of a consumer crash: consumer A appends batch N to bronze with its offsets in the snapshot summary and dies before the offset commit; compose restarts it; the new owner of the partitions reads the committed offsets and the last offsets written to bronze, resumes after the larger one and commits it, so batch N is not appended twice; a stalled replica that tries to append an old batch hits the offset fence and exits without committing](docs/diagrams/user-flows-consumer-restart.svg)
+
+Source: [user-flows-consumer-restart.d2](docs/diagrams/user-flows-consumer-restart.d2).
+
 ## Make targets
 
 | Target | What it does |
@@ -241,12 +273,31 @@ docker compose run --rm cli dlq --limit 10
 | `make lint` / `make test-fast` | ruff and mypy / unit tests, no stack needed |
 | `make test-spark` | Spark tests (Linux, WSL or CI) |
 | `make test-integration` | integration tests against the running stack |
+| `make d2-install` | install the pinned D2 (Linux x86_64) under `~/.local/share/d2`, checksum verified |
+| `make diagrams` | render every `docs/diagrams/*.d2` to SVG |
+| `make diagrams-check` | render, then fail if a committed SVG is stale, missing or has no source (what the CI diagrams job runs) |
+| `make diagrams-watch NAME=<name>` | live preview of one diagram in the browser while you edit it |
+
+### Diagrams
+
+The diagrams are [D2](https://d2lang.com) sources in `docs/diagrams/`, rendered to SVG next to
+them and committed, so GitHub shows them without a build. Every diagram imports `_style.d2`, which
+pins the layout engine (ELK), the light and dark themes and the colors per element kind; the SVGs
+follow the reader's light or dark mode. D2 is pinned to v0.9.0 in the Makefile.
+
+1. `make d2-install` once (Linux or WSL; elsewhere install D2 v0.9.0 yourself and pass
+   `D2=/path/to/d2`).
+2. Edit a `.d2` file and run `make diagrams-watch NAME=data-flow`: open the URL it prints, and the
+   page reloads on every save. Stop it with Ctrl+C.
+3. `make diagrams`, then commit the `.d2` and the `.svg` together.
 
 ## Status
 
 The project ships in phases, one pull request each: compose and producer, consumer and bronze,
 Spark silver and gold, Trino and the end-to-end check, schema evolution with the DLQ command,
-and CI (lint, unit, Spark and end-to-end jobs, plus a weekly dependency audit).
+and CI (lint, unit, Spark and end-to-end jobs, plus a weekly dependency audit). The diagrams
+followed in their own pull request, with a CI job that fails when a committed SVG no longer
+matches its D2 source.
 
 ## Related
 

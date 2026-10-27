@@ -8,6 +8,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- D2 diagrams in `docs/diagrams/`, rendered to SVG and shown in the README: architecture, data
+  flow, data model (every Iceberg table with its keys and partitions) and four sequence diagrams
+  (an event's lifecycle with the DLQ path, schema evolution, `make demo`, a consumer crash and
+  restart). They replace the README's Mermaid block. `make d2-install`, `make diagrams`,
+  `make diagrams-check`, `make diagrams-watch NAME=<name>`, and a CI `diagrams` job that fails
+  when a committed SVG differs from its source and uploads the SVGs as an artifact.
+
 - Schema evolution: `ShopEvent` v2 adds an optional `device_type`. `register-schemas --version 2`
   tests compatibility before registering, and `--check-only PATH` only tests a schema;
   `shop_event.v2-breaking.avsc` shows the registry rejecting a required field with no default.

@@ -1,0 +1,45 @@
+# The schema-evolution step of make demo: ShopEvent v2 adds an optional device_type under
+# BACKWARD compatibility, the registry rejects a breaking schema, and bronze gains the column.
+# silver.events is created with device_type (spark/tables.py SILVER_EVENTS; silver.py projects a
+# typed null while bronze lacks it), so ensure_tables' ALTER TABLE runs only on a table created
+# before v2. Grounded in src/lakestream/registry.py, cli.py (register-schemas), producer/run.py,
+# consumer/{run,bronze}.py (evolve_schema, append_batch), spark/{tables,silver}.py,
+# scripts/demo.sh and docs/DECISIONS.md 26 and 28.
+...@_style
+
+evolution: "Schema evolution: v2 adds an optional device_type" {
+  shape: sequence_diagram
+  style: {font-size: 24; bold: true}
+
+  cli: "cli\nregister-schemas" {class: process}
+  registry: "Schema\nRegistry" {class: check}
+  producer: producer {class: source}
+  topic: "shop.events" {class: store}
+  consumer: "consumer\nbronze-ingest" {class: process}
+  lake: "Iceberg\ntables" {class: store}
+  spark: "spark-job\nsilver" {class: process}
+
+  cli -> registry: "--version 2: set\nBACKWARD on\nshop.events-value"
+  cli -> registry: "test v2 against\nthe latest version"
+  registry -> cli: "compatible: new field\nhas a default (null)" {class: meta}
+  cli -> registry: "register v2"
+  registry -> cli: "new schema id" {class: meta}
+  "breaking schema, must be rejected": {
+    cli -> registry: "--check-only\nshop_event.v2-\nbreaking.avsc"
+    registry -> cli: "incompatible: required\nfield, no default;\nexit 1 (the demo\nexpects it)" {class: meta}
+  }
+  producer -> registry: "run 2 (schema v2):\nlook up the v2 id"
+  producer -> topic: "v2 events: one\ndevice_type per\nsession"
+  topic -> consumer: "records with\nthe v2 schema id"
+  consumer -> registry: "unknown id: fetch\nthe writer schema\nonce"
+  consumer -> lake: "refresh bronze;\nunion_by_name\nadds device_type\n(optional)"
+  consumer -> lake: "offset fence,\nappend; v1 rows\nread device_type\nas null"
+  "both replicas evolve at once": {
+    consumer -> consumer: "the loser gets a\ncommit conflict,\nrefreshes, finds\nthe column"
+  }
+  "only a silver.events created before v2": {
+    spark -> lake: "ensure_tables:\nALTER TABLE\nADD COLUMN\ndevice_type"
+  }
+  spark -> lake: "available-now run\non the evolved\nbronze; checkpoints\nstay valid"
+  spark -> lake: "append to\nsilver.events, which\nhas device_type\nsince its creation"
+}
