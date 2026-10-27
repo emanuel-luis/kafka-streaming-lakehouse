@@ -1,0 +1,155 @@
+# The Iceberg tables in catalog lake, every column with its Iceberg type. Grounded in
+# src/lakestream/consumer/bronze.py (bronze_schema, ensure_table: partition days(ingested_at),
+# device_type appended by union_by_name), src/lakestream/schemas/shop_event.v2.avsc,
+# src/lakestream/spark/tables.py (silver, gold, ops schemas and partitions), spark/gold.py
+# (grains) and ops/check.py (the uniqueness the check asserts). Iceberg has no key constraints:
+# "key" marks the logical key of a row, "partition" the column of the days() transform.
+# Arrows are lineage, not foreign keys.
+...@_style
+
+# 16 px rows keep seven full tables under ~1,300 px wide.
+classes: {
+  table: {
+    shape: sql_table
+    style.font-size: 16
+  }
+}
+
+title: "Data model: the Iceberg tables, their keys and partitions" {
+  shape: text
+  near: top-center
+  style: {font-size: 24; bold: true}
+}
+
+note: "All tables are Iceberg format v2 in the REST catalog lake, data on RustFS (s3://lakehouse/warehouse).\nkey: the logical key (unique bronze coordinates and silver event_id are asserted by lakestream check;\ngold keys are the GROUP BY of each table). partition: the table is partitioned by days() of this column.\nBronze appends carry ingest.run_id, batch_id, consumer_group, topic, offsets, records, dlq_records\nin the snapshot summary; gold tables are replaced in one snapshot per run with the property run_id." {
+  shape: text
+  near: bottom-center
+  style.font-size: 14
+}
+
+direction: right
+
+bronze_events: "bronze.events" {
+  class: table
+  event_id: string
+  event_type: string
+  event_time: timestamptz
+  user_id: string
+  session_id: string
+  page_url: string
+  product_id: string
+  quantity: int
+  unit_price: decimal(10,2)
+  order_id: string
+  amount: decimal(12,2)
+  currency: string
+  payment_method: string
+  payment_status: string
+  kafka_topic: string {constraint: key}
+  kafka_partition: int {constraint: key}
+  kafka_offset: long {constraint: key}
+  kafka_timestamp: timestamptz
+  kafka_key: string
+  schema_id: int
+  ingested_at: timestamptz {constraint: partition}
+  run_id: string
+  batch_id: long
+  device_type: string {constraint: "added by v2"}
+}
+
+silver_events: "silver.events" {
+  class: table
+  event_id: string {constraint: key}
+  event_type: string
+  event_time: timestamptz {constraint: partition}
+  user_id: string
+  session_id: string
+  page_url: string
+  product_id: string
+  quantity: int
+  unit_price: decimal(10,2)
+  order_id: string
+  amount: decimal(12,2)
+  currency: string
+  payment_method: string
+  payment_status: string
+  device_type: string
+  kafka_partition: int
+  kafka_offset: long
+  ingested_at: timestamptz
+  processed_at: timestamptz
+}
+
+silver_rejects: "silver.rejects" {
+  class: table
+  event_id: string
+  event_type: string
+  event_time: timestamptz
+  user_id: string
+  reject_reason: string
+  record_json: string
+  kafka_topic: string
+  kafka_partition: int
+  kafka_offset: long
+  ingested_at: timestamptz
+  processed_at: timestamptz {constraint: partition}
+}
+
+events_per_minute: "gold.events_per_minute" {
+  class: table
+  window_start: timestamptz {constraint: [key; partition]}
+  window_end: timestamptz
+  event_type: string {constraint: key}
+  event_count: long
+  unique_users: long
+}
+
+revenue_5min: "gold.revenue_5min" {
+  class: table
+  window_start: timestamptz {constraint: [key; partition]}
+  window_end: timestamptz
+  currency: string {constraint: key}
+  orders_placed: long
+  order_amount: decimal(22,2)
+  payments_approved: long
+  payments_declined: long
+  approved_amount: decimal(22,2)
+}
+
+user_sessions: "gold.user_sessions" {
+  class: table
+  user_id: string {constraint: key}
+  session_start: timestamptz {constraint: [key; partition]}
+  last_event_at: timestamptz
+  session_window_end: timestamptz
+  duration_seconds: long
+  event_count: long
+  page_views: long
+  add_to_carts: long
+  orders_placed: long
+  payments_approved: long
+  revenue: decimal(22,2)
+  reached_cart: boolean
+  reached_order: boolean
+  reached_payment: boolean
+}
+
+job_runs: "ops.job_runs (unpartitioned)" {
+  class: table
+  run_id: string
+  job: string
+  started_at: timestamptz
+  finished_at: timestamptz
+  status: string
+  rows_in: long
+  rows_out: long
+  rows_rejected: long
+  rows_dropped_late: long
+  details: string
+}
+
+bronze_events.event_id -> silver_events.event_id
+bronze_events.event_id -> silver_rejects.event_id
+silver_events.event_time -> events_per_minute.window_start
+silver_events.event_time -> revenue_5min.window_start
+silver_events.event_time -> user_sessions.session_start

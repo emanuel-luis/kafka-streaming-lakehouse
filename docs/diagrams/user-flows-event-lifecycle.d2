@@ -1,0 +1,41 @@
+# One event from the producer to a Trino query, with the DLQ path for a record that cannot be
+# decoded and the retry path for a transient error. Grounded in src/lakestream/producer/run.py,
+# consumer/{run,decode,dlq,bronze,batch}.py, spark/{silver,silver_job,gold_job}.py and
+# docs/PLAN.md (consumer design, silver, gold). Actors are spaced by their message labels, so
+# labels wrap early to keep the width under ~1,300 px.
+...@_style
+
+lifecycle: "An event's lifecycle, including the DLQ path" {
+  shape: sequence_diagram
+  style: {font-size: 24; bold: true}
+
+  producer: producer {class: source}
+  registry: "Schema\nRegistry" {class: check}
+  topic: "shop.events" {class: store}
+  consumer: "consumer\nbronze-ingest" {class: process}
+  dlq: "shop.events.dlq" {class: store}
+  lake: "Iceberg\ntables" {class: store}
+  spark: "spark-job" {class: process}
+  trino: Trino {class: serving}
+
+  producer -> registry: "look up the\nschema id\n(no auto-\nregister)"
+  registry -> producer: "schema id" {class: meta}
+  producer -> topic: "send: key user_id,\nacks=all, idempotent"
+  topic -> consumer: "a batch: up to\n2000 records\nor 5 s"
+  consumer -> consumer: "read the header:\nmagic byte,\nschema id"
+  consumer -> registry: "writer schema\nof the id (cached)"
+  "undecodable record": {
+    consumer -> dlq: "original bytes;\nerror, topic,\npartition, offset\nin headers"
+    consumer -> dlq: "flush: a failed\ndelivery fails\nthe batch"
+  }
+  "registry 5xx or sink error": {
+    consumer -> consumer: "retry the batch\n1, 2, 4, 8, 16 s;\nthen exit 1\nwithout committing"
+  }
+  consumer -> lake: "refresh bronze,\noffset fence, append\nrows + ingest.offsets\n(one commit)"
+  consumer -> topic: "commit last\noffset + 1 per\npartition (sync)"
+  spark -> lake: "silver: read\nnew bronze\nsnapshots"
+  spark -> spark: "validate\n(7 reasons);\ndedupe event_id\nin a 3 h\nwatermark"
+  spark -> lake: "append to\nsilver.events or\nsilver.rejects;\ncheckpoint"
+  spark -> lake: "gold: recompute\nfrom one silver\nsnapshot, replace\neach table"
+  trino -> lake: "SQL by\nevent time,\ntime travel"
+}

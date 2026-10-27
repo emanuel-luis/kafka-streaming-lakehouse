@@ -1,0 +1,35 @@
+# Operator view of a consumer crash between the bronze append and the Kafka offset commit, the
+# restart, and the offset fence against a stalled replica. Grounded in
+# src/lakestream/consumer/run.py (flush_batch, on_assign, _commit_catch_up, the hidden
+# --crash-after-write-batch hook), consumer/bronze.py (last_written_offsets, append_batch,
+# OffsetFenceError), consumer/batch.py (resume_offset), compose.yaml (replicas: 2,
+# restart: on-failure), docs/DECISIONS.md 14 and 21, and tests/integration.
+...@_style
+
+restart: "Consumer crash after the bronze append, before the offset commit" {
+  shape: sequence_diagram
+  style: {font-size: 24; bold: true}
+
+  compose: "docker compose\nrestart: on-failure" {class: process}
+  a: "consumer A" {class: process}
+  kafka: "Kafka, group\nbronze-ingest" {class: store}
+  bronze: "bronze.events" {class: store}
+  b: "consumer B" {class: process}
+
+  kafka -> a: "batch N of its\npartitions"
+  a -> bronze: "append batch N; the\nsnapshot summary holds\ningest.offsets (durable)"
+  a -> a: "crash before the\noffset commit (a failure,\nor the test hook\n--crash-after-write-batch)"
+  compose -> a: "restart A"
+  kafka -> b: "rebalance: the partitions\nget a new owner (B here,\nor A after its restart)"
+  "on_assign in the new owner": {
+    b -> kafka: "committed offsets\n(still before batch N)"
+    b -> bronze: "last written offset per\npartition: ingest.offsets of\nappend snapshots, newest\nfirst, this group and topic"
+    b -> b: "resume = max(committed,\nlast written + 1)"
+    b -> kafka: "assign at the resume\npoint; catch-up commit"
+  }
+  kafka -> b: "records after batch N:\nnothing is appended twice"
+  "stalled replica (past max.poll.interval.ms) that wakes up": {
+    a -> bronze: "append an old batch:\nrefresh, read the offsets\nthis group already wrote"
+    a -> a: "offset at or past the\nbatch start: OffsetFenceError,\nexit 1 without committing"
+  }
+}
