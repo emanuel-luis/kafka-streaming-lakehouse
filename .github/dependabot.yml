@@ -10,5 +10,11 @@ updates:
   - package-ecosystem: uv
     directory: /
     schedule: { interval: weekly }
+    ignore:
+      # The Spark line moves by hand with the Iceberg runtime jar (iceberg-spark-runtime-<spark>_2.13
+      # in src/lakestream/spark/session.py); decision 34 lists what else moves with it (decision 9).
+      # Patch releases of the current line still come.
+      - dependency-name: pyspark
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
     groups:
       uv: { patterns: ["*"] }

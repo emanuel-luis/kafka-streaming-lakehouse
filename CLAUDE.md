@@ -28,7 +28,8 @@ portfolio repo; all data is synthetic.
 - CI (`.github/workflows/ci.yml`): `lint` gates `test-fast`, `test-spark` and `e2e` (`make demo`,
   `make test-integration`, `make down`); `diagrams` (`make d2-install`, `make diagrams-check`, SVGs
   uploaded as an artifact) runs on its own; `UV_LOCKED=1`; actions pinned by SHA. `security.yml`
-  runs pip-audit; Dependabot covers actions and uv, not Docker images.
+  runs pip-audit; Dependabot covers actions and uv, not Docker images, and ignores pyspark minor
+  and major updates: the Spark line moves by hand with the Iceberg runtime jar (decision 34).
 - `make demo`: `scripts/demo.sh`, the whole run from fresh volumes (a stack run: heavy lock): run 1
   with schema v1, then v2, the rejected v2-breaking check and run 2, then maintain.
 - Spark tests and jobs never run in Windows Python. On the owner's machine:
