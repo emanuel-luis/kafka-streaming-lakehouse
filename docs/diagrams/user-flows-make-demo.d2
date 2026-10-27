@@ -1,0 +1,47 @@
+# Operator (or CI) journey: make demo from a fresh clone, with the end-to-end check after each
+# run. Grounded in scripts/demo.sh, the Makefile (demo, down), compose.yaml and the e2e job in
+# .github/workflows/ci.yml.
+...@_style
+
+demo: "make demo: two runs through every layer, checked each time" {
+  shape: sequence_diagram
+  style: {font-size: 24; bold: true}
+
+  operator: "Operator or\nCI e2e job" {class: actor}
+  script: "scripts/demo.sh" {class: process}
+  stack: "compose stack" {class: process}
+  producer: producer {class: source}
+  cli: cli {class: process}
+  spark: "spark-job" {class: process}
+  trino: Trino {class: serving}
+
+  operator -> script: "make demo"
+  script -> stack: "down -v (fresh\nvolumes), then\nup --build --wait"
+  stack -> stack: "init jobs: topics,\nschema v1, bucket;\nconsumers and\nTrino healthy"
+  "run 1, schema v1": {
+    script -> producer: "produce --seed 42\nmanifest run1.json"
+    script -> cli: "lag --wait: every\npartition committed"
+    script -> spark: "silver\n(available-now)"
+    script -> spark: "gold"
+    script -> cli: "check run1.json"
+    cli -> trino: "every layer vs\nthe manifest"
+  }
+  "schema v2": {
+    script -> cli: "register-schemas\n--version 2"
+    script -> cli: "--check-only\nv2-breaking: must\nprint incompatible"
+  }
+  "run 2, schema v2, next day": {
+    script -> producer: "produce --seed 43,\nschema v2,\nmanifest run2.json"
+    script -> cli: "lag --wait"
+    script -> spark: "silver, then gold"
+    script -> cli: "check both\nmanifests"
+    cli -> trino: "summed expectations;\ngold time travel to\nthe run-1 snapshot"
+    script -> cli: "dlq --limit 3"
+  }
+  "maintenance": {
+    script -> spark: "maintain: compaction,\nmanifest rewrite,\nsnapshot expiry"
+    script -> cli: "check both again:\ncounts unchanged"
+  }
+  script -> operator: "exit 0; on error: the\nfailed step, ps and\nrecent logs" {class: meta}
+  operator -> stack: "CI: make test-integration;\nthen make down removes\nthe stack and volumes"
+}

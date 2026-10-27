@@ -1,0 +1,84 @@
+# The system in context: the operator, CI and the services of the compose stack.
+# Grounded in compose.yaml, the Makefile, scripts/demo.sh, trino/catalog/lake.properties,
+# src/lakestream/{producer,consumer,spark,ops}/ and .github/workflows/ci.yml.
+# Layer detail is in data-flow.d2; the make demo sequence in user-flows-make-demo.d2.
+# Edge labels become ELK layers, so most of the text sits in node labels.
+...@_style
+
+title: "Architecture: Kafka into an Iceberg lakehouse, all in docker compose" {
+  shape: text
+  near: top-center
+  style: {font-size: 24; bold: true}
+}
+
+direction: down
+
+operator: Operator {class: actor}
+actions: "GitHub Actions\nci.yml e2e job" {class: external}
+make: "make demo, make targets\nscripts/demo.sh\ncompose up, compose run" {class: process}
+
+stack: "docker compose · project kafka-streaming-lakehouse" {
+  class: group
+
+  init: "one-shot init jobs\nkafka-init: topics\nschema-init: schema v1\ns3-init: bucket" {class: process}
+  producer: "producer\nlakestream produce\nAvro, acks=all, idempotent\nkey user_id, seeded" {class: source}
+  runs: "volume demo_runs\nrun manifests" {class: store}
+
+  # Label at the bottom: the DLQ edge enters from the top.
+  kafka: "Kafka 8.3.2 (KRaft)" {
+    class: group
+    label.near: bottom-left
+    registry: "Schema Registry\nshop.events-value\nBACKWARD" {class: check}
+    events: "shop.events\n6 partitions" {class: store}
+    dlq: "shop.events.dlq\n1 partition" {class: store}
+  }
+
+  consumer: "consumer × 2, group bronze-ingest\nappends bronze (PyIceberg),\nthen commits the offsets" {
+    class: process
+    style.multiple: true
+  }
+  cli: "cli\nlag, check, dlq,\nregister-schemas" {class: process}
+  ui: "Kafbat UI\n(profile ui)" {class: serving}
+  spark: "spark-job\nSpark 4.1, Iceberg 1.12\nsilver: Structured Streaming\ngold: batch recompute\nmaintain: compaction, expiry\ncheckpoints: volume\nspark_checkpoints" {class: process}
+
+  lake: "Lakehouse storage" {
+    class: group
+    rest: "Iceberg REST catalog\ntable pointers in SQLite\n(volume catalog_data)" {class: process}
+    s3: "RustFS (S3-compatible)\ndata and metadata files\ns3://lakehouse/warehouse" {class: store}
+  }
+
+  trino: "Trino 484\ncatalog lake" {class: serving}
+
+  init -> kafka {class: meta}
+  init -> lake {class: meta}
+  producer -> kafka.events
+  producer -> kafka.registry {class: meta}
+  producer -> runs
+  kafka.events -> consumer
+  kafka.registry -> consumer {class: meta}
+  consumer -> kafka.dlq: "undecodable"
+  consumer -> lake
+  kafka -> cli {class: meta}
+  kafka -> ui {class: meta}
+  runs -> cli
+  lake <-> spark
+  lake -> trino
+  cli -> trino: "check (SQL)"
+}
+
+operator -> make
+actions -> make
+make -> stack
+
+legend: Legend {
+  class: legend
+  grid-columns: 4
+  actor: actor {class: [actor; legend-actor]}
+  external: external system {class: [external; legend-item]}
+  source: event source {class: [source; legend-item]}
+  process: service or job {class: [process; legend-item]}
+  store: topic, table or volume {class: [store; legend-store]}
+  check: contract {class: [check; legend-item]}
+  serving: serving {class: [serving; legend-item]}
+  edges: "solid arrow: data or a call\ndashed: metadata or control" {shape: text; style.font-size: 13}
+}
