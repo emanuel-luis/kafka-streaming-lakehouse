@@ -29,7 +29,7 @@ lifecycle: "An event's lifecycle, including the DLQ path" {
     consumer -> dlq: "flush: a failed\ndelivery fails\nthe batch"
   }
   "registry 5xx or sink error": {
-    consumer -> consumer: "retry the batch\n1, 2, 4, 8, 16 s;\nthen exit 1\nwithout committing"
+    consumer -> consumer: "retry the failing\nstep 1, 2, 4, 8, 16 s;\nthen exit 1\nwithout committing"
   }
   consumer -> lake: "refresh bronze,\noffset fence, append\nrows + ingest.offsets\n(one commit)"
   consumer -> topic: "commit last\noffset + 1 per\npartition (sync)"

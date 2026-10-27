@@ -46,7 +46,7 @@ silver_rejects: "lake.silver.rejects\nreject_reason, record_json" {class: store}
 
 gold_job: "Gold · Spark batch\nrecompute from one\npinned silver snapshot" {class: process}
 gold: "lake.gold.events_per_minute,\nrevenue_5min, user_sessions\neach replaced in one snapshot\nper run (property run_id)" {class: store}
-ops: "lake.ops.job_runs\none row per Spark run:\nrows in, out, rejected, late" {class: store}
+ops: "lake.ops.job_runs\none row per silver or gold\nrun: rows in, out,\nrejected, late" {class: store}
 maintain: "maintain: compaction, manifest\nrewrite, snapshot expiry; bronze\nexpiry clamped to the checkpoints" {class: process}
 
 trino: "Trino, catalog lake\nSQL over every table,\nsnapshots, time travel" {class: serving}
