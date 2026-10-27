@@ -1,0 +1,93 @@
+# Layers from the producer to serving, and where contracts, checkpoints, offset commits, run
+# metadata and the end-to-end check sit. Grounded in docs/PLAN.md, src/lakestream/producer/,
+# consumer/{run,bronze,dlq}.py, spark/{silver,silver_job,gold_job,maintain,runlog}.py and
+# ops/{check,expectations}.py. Edge labels become ELK layers, so most text sits in node labels.
+...@_style
+
+title: "Data flow: topics to bronze, silver and gold, checked against the manifest" {
+  shape: text
+  near: top-center
+  style: {font-size: 24; bold: true}
+}
+
+direction: down
+
+gen: "lakestream produce\nseeded ShopEvent stream, with\nduplicates, late, malformed\nand invalid records on purpose" {class: source}
+kafka: "Kafka" {
+  class: group
+  registry: "Schema Registry\nAvro ShopEvent v1, v2\nBACKWARD compatibility" {class: check}
+  events: "shop.events\n6 partitions, key user_id" {class: store}
+  dlq: "shop.events.dlq\noriginal bytes; error and\ncoordinates in headers" {class: store}
+}
+
+# Container labels sit where no edge enters (gotcha: edges cross top-left labels).
+ingest: "Bronze ingest · group bronze-ingest × 2" {
+  class: group
+  label.near: top-right
+  decode: "decode each record with its\nwriter schema; batches of up\nto 2000 records or 5 s" {class: process}
+  fence: "offset fence on every append;\non assign, resume at max(committed,\nlast written + 1) from bronze" {class: check}
+}
+
+bronze: "lake.bronze.events\nappend-only, Kafka coordinates,\nsnapshot summary ingest.offsets" {class: store}
+commit: "2. commit the batch offsets\nto Kafka (last + 1 per partition),\nonly after the append is durable" {class: process}
+
+silver: "Silver · Structured Streaming" {
+  class: group
+  label.near: top-right
+  validate: "contract: 7 reject reasons,\nthe first failing rule wins" {class: check}
+  dedupe: "dedupe event_id\nwithin a 3 h watermark" {class: process}
+  ckpt: "checkpoints\nsilver_events, silver_rejects:\noffsets, commits, state" {class: store}
+  validate -> dedupe
+  validate -> ckpt {class: meta}
+}
+
+silver_events: "lake.silver.events\none row per event_id" {class: store}
+silver_rejects: "lake.silver.rejects\nreject_reason, record_json" {class: store}
+
+gold_job: "Gold · Spark batch\nrecompute from one\npinned silver snapshot" {class: process}
+gold: "lake.gold.events_per_minute,\nrevenue_5min, user_sessions\neach replaced in one snapshot\nper run (property run_id)" {class: store}
+ops: "lake.ops.job_runs\none row per silver or gold\nrun: rows in, out,\nrejected, late" {class: store}
+maintain: "maintain: compaction, manifest\nrewrite, snapshot expiry; bronze\nexpiry clamped to the checkpoints" {class: process}
+
+trino: "Trino, catalog lake\nSQL over every table,\nsnapshots, time travel" {class: serving}
+e2e: "End-to-end check" {
+  class: group
+  label.near: bottom-left
+  manifest: "run manifests\n/runs/runN.json, written\nafter a clean flush" {class: source}
+  check: "lakestream check\nbronze, DLQ, silver, rejects,\ngold, ops vs the manifests;\nexit 1 on any mismatch" {class: check}
+  manifest -> check {class: meta}
+}
+
+gen -> kafka.events
+gen -> kafka.registry {class: meta}
+gen -> e2e.manifest
+kafka.events -> ingest.decode
+kafka.registry -> ingest.decode {class: meta}
+kafka.events -> ingest.fence {class: layer}
+ingest.decode -> kafka.dlq: "undecodable"
+ingest.decode -> bronze: "1. append"
+bronze -> commit {class: meta}
+
+bronze -> silver.validate
+silver.validate -> silver_rejects: "rejected"
+silver.dedupe -> silver_events
+silver_events -> gold_job
+gold_job -> gold
+silver -> ops: "run row" {class: meta}
+gold_job -> ops {class: meta}
+silver.ckpt -> maintain {class: meta}
+
+gold -> trino
+trino -> e2e.check
+kafka.dlq -> e2e.check {class: meta}
+
+legend: Legend {
+  class: legend
+  grid-columns: 3
+  source: source or manifest {class: [source; legend-item]}
+  process: process or job {class: [process; legend-item]}
+  store: "topic, table\nor checkpoint" {class: [store; legend-store]}
+  check: contract or check {class: [check; legend-item]}
+  serving: serving {class: [serving; legend-item]}
+  edges: "solid arrow: data\ndashed: metadata or control" {shape: text; style.font-size: 13}
+}
