@@ -68,13 +68,13 @@ reasons behind each choice in [docs/DECISIONS.md](docs/DECISIONS.md).
 
 ### Data flow
 
-![Data flow: the seeded producer writes shop.events and a run manifest; the consumer group decodes each record with its writer schema, sends undecodable ones to the DLQ, appends bronze with its Kafka offsets in the snapshot summary and only then commits the offsets, with an offset fence on every append; the silver stream sends contract violations to silver.rejects and deduplicates event_id within a 3-hour watermark into silver.events, keeping checkpoints that also clamp maintenance; gold recomputes three tables from one silver snapshot; Spark runs log to ops.job_runs; lakestream check compares every layer and the DLQ with the manifests through Trino](docs/diagrams/data-flow.svg)
+![Data flow: the seeded producer writes shop.events and a run manifest; the consumer group decodes each record with its writer schema, sends undecodable ones to the DLQ, appends bronze with its Kafka offsets in the snapshot summary and only then commits the offsets, with an offset fence on every append; the silver stream sends contract violations to silver.rejects and deduplicates event_id within a 3-hour watermark into silver.events, keeping checkpoints that also clamp maintenance; gold recomputes three tables from one silver snapshot; silver and gold runs log to ops.job_runs; lakestream check compares every layer and the DLQ with the manifests through Trino](docs/diagrams/data-flow.svg)
 
 Source: [data-flow.d2](docs/diagrams/data-flow.d2).
 
 ### An event's lifecycle
 
-![Sequence of one event: the producer looks up the schema id and sends the record keyed by user_id; the consumer reads the header and the writer schema, sends an undecodable record with its coordinates to the DLQ and flushes, retries the whole batch on a transient error, appends the batch to bronze with its offsets and then commits them; spark-job reads the new bronze snapshots, validates and deduplicates into silver and recomputes gold; Trino queries the tables](docs/diagrams/user-flows-event-lifecycle.svg)
+![Sequence of one event: the producer looks up the schema id and sends the record keyed by user_id; the consumer reads the header and the writer schema, sends an undecodable record with its coordinates to the DLQ and flushes, retries a failing step with backoff on a transient error, appends the batch to bronze with its offsets and then commits them; spark-job reads the new bronze snapshots, validates and deduplicates into silver and recomputes gold; Trino queries the tables](docs/diagrams/user-flows-event-lifecycle.svg)
 
 Source: [user-flows-event-lifecycle.d2](docs/diagrams/user-flows-event-lifecycle.d2).
 
@@ -140,7 +140,7 @@ every run. When you are done, `make down` removes the stack and its volumes.
 
 ## Data model
 
-![Data model: bronze.events (the Avro fields, Kafka coordinates as the key, partitioned by day of ingested_at, device_type added by v2) feeds silver.events (key event_id, partitioned by day of event_time) and silver.rejects (partitioned by day of processed_at); silver.events feeds gold.events_per_minute, gold.revenue_5min and gold.user_sessions, each keyed by its window and grouping column; ops.job_runs logs every Spark run](docs/diagrams/data-model.svg)
+![Data model: bronze.events (the Avro fields, Kafka coordinates as the key, partitioned by day of ingested_at, device_type added by v2) feeds silver.events (key event_id, partitioned by day of event_time) and silver.rejects (partitioned by day of processed_at); silver.events feeds gold.events_per_minute, gold.revenue_5min and gold.user_sessions, each keyed by its window and grouping column; ops.job_runs logs every silver and gold run](docs/diagrams/data-model.svg)
 
 Source: [data-model.d2](docs/diagrams/data-model.d2). Iceberg has no key constraints: "key" marks
 the logical key of each table, and the check asserts the bronze and silver ones.
@@ -239,9 +239,11 @@ docker compose run --rm cli dlq --limit 10
 
 Between the two runs, `make demo` registers `ShopEvent` v2, which adds an optional `device_type`,
 and checks that the registry rejects a schema with a new required field. The consumer adds the
-column to bronze before it appends a v2 record, and silver adds it before its queries start.
+column to bronze before it appends a v2 record. `silver.events` has the column from its creation
+(null while bronze has none), so the next silver run reads it with the same checkpoints; only a
+`silver.events` created before v2 gets an `ALTER TABLE ... ADD COLUMN`.
 
-![Sequence of the schema evolution: register-schemas sets BACKWARD, tests v2 and registers it; the registry rejects the breaking schema, which adds a required field with no default; the producer sends v2 events; the consumer fetches the new writer schema, adds device_type to bronze with union_by_name and appends, v1 rows reading null; silver adds the column with ALTER TABLE and keeps its checkpoints](docs/diagrams/user-flows-schema-evolution.svg)
+![Sequence of the schema evolution: register-schemas sets BACKWARD, tests v2 and registers it; the registry rejects the breaking schema, which adds a required field with no default; the producer sends v2 events; the consumer fetches the new writer schema, adds device_type to bronze with union_by_name and appends, v1 rows reading null; the next available-now silver run reads the evolved bronze with its checkpoints into silver.events, which has device_type from its creation, and only an older silver.events gets an ALTER TABLE](docs/diagrams/user-flows-schema-evolution.svg)
 
 Source: [user-flows-schema-evolution.d2](docs/diagrams/user-flows-schema-evolution.d2).
 

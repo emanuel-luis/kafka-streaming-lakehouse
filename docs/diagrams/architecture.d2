@@ -24,8 +24,9 @@ stack: "docker compose · project kafka-streaming-lakehouse" {
   producer: "producer\nlakestream produce\nAvro, acks=all, idempotent\nkey user_id, seeded" {class: source}
   runs: "volume demo_runs\nrun manifests" {class: store}
 
-  # Label at the bottom: the DLQ edge enters from the top.
-  kafka: "Kafka 8.3.2 (KRaft)" {
+  # Label at the bottom (the DLQ edge enters from the top) and short (the registry edge leaves
+  # through the bottom). The image tag (Confluent Platform 8.3.2) is in the README tech stack.
+  kafka: "Kafka in KRaft mode" {
     class: group
     label.near: bottom-left
     registry: "Schema Registry\nshop.events-value\nBACKWARD" {class: check}

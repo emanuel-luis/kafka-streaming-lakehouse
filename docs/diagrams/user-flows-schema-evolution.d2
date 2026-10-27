@@ -1,7 +1,9 @@
 # The schema-evolution step of make demo: ShopEvent v2 adds an optional device_type under
-# BACKWARD compatibility, the registry rejects a breaking schema, and bronze and silver gain the
-# column. Grounded in src/lakestream/registry.py, cli.py (register-schemas), producer/run.py,
-# consumer/{run,bronze}.py (evolve_schema, append_batch), spark/tables.py (ensure_tables),
+# BACKWARD compatibility, the registry rejects a breaking schema, and bronze gains the column.
+# silver.events is created with device_type (spark/tables.py SILVER_EVENTS; silver.py projects a
+# typed null while bronze lacks it), so ensure_tables' ALTER TABLE runs only on a table created
+# before v2. Grounded in src/lakestream/registry.py, cli.py (register-schemas), producer/run.py,
+# consumer/{run,bronze}.py (evolve_schema, append_batch), spark/{tables,silver}.py,
 # scripts/demo.sh and docs/DECISIONS.md 26 and 28.
 ...@_style
 
@@ -35,6 +37,9 @@ evolution: "Schema evolution: v2 adds an optional device_type" {
   "both replicas evolve at once": {
     consumer -> consumer: "the loser gets a\ncommit conflict,\nrefreshes, finds\nthe column"
   }
-  spark -> lake: "ensure_tables:\nALTER TABLE\nsilver.events ADD\nCOLUMN device_type"
+  "only a silver.events created before v2": {
+    spark -> lake: "ensure_tables:\nALTER TABLE\nADD COLUMN\ndevice_type"
+  }
   spark -> lake: "available-now run\non the evolved\nbronze; checkpoints\nstay valid"
+  spark -> lake: "append to\nsilver.events, which\nhas device_type\nsince its creation"
 }

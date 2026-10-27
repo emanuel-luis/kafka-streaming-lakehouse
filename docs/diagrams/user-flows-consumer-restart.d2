@@ -15,6 +15,7 @@ restart: "Consumer crash after the bronze append, before the offset commit" {
   kafka: "Kafka, group\nbronze-ingest" {class: store}
   bronze: "bronze.events" {class: store}
   b: "consumer B" {class: process}
+  stale: "a stalled\nreplica" {class: process}
 
   kafka -> a: "batch N of its\npartitions"
   a -> bronze: "append batch N; the\nsnapshot summary holds\ningest.offsets (durable)"
@@ -28,8 +29,8 @@ restart: "Consumer crash after the bronze append, before the offset commit" {
     b -> kafka: "assign at the resume\npoint; catch-up commit"
   }
   kafka -> b: "records after batch N:\nnothing is appended twice"
-  "stalled replica (past max.poll.interval.ms) that wakes up": {
-    a -> bronze: "append an old batch:\nrefresh, read the offsets\nthis group already wrote"
-    a -> a: "offset at or past the\nbatch start: OffsetFenceError,\nexit 1 without committing"
+  "a replica stalled past max.poll.interval.ms wakes up": {
+    stale -> bronze: "append an old batch:\nrefresh, read the offsets\nthis group already wrote"
+    stale -> stale: "offset at or past\nthe batch start:\nOffsetFenceError,\nexit 1, no commit"
   }
 }
