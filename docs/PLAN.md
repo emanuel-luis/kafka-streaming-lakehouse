@@ -271,10 +271,13 @@ only the partitions it touched.
 
 How late data is shown:
 
-- Late events keep their event time and are sent after events with a later event time (by up to
-  `--late-max-seconds`). They sit at higher offsets than newer events in the same partition, yet
-  land in the window of their own event time. The manifest's per-minute expectation proves it,
-  and a README query compares `event_time` order with `kafka_offset` order.
+- A late event keeps its event time and is sent after the same user's next event, at most
+  `--late-max-seconds` after its own event time. Records are keyed by `user_id` and the producer
+  is idempotent, so that newer event is in the same partition at a lower offset: every id in the
+  manifest's `late_event_ids` sits behind at least one newer event of its partition, yet lands in
+  the window of its own event time. Events that have no same-user successor within the bound are
+  never marked late (see the injection table below). The manifest's per-minute expectation proves
+  the window placement, and a README query compares `event_time` order with `kafka_offset` order.
 - Too-late scenario: deferred (decision 27). It would send events dated on day 1 after the
   run-2 silver pass and assert that silver drops them.
 
